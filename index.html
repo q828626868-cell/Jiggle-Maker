@@ -1,0 +1,1213 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>局部果凍物理模擬</title>
+<style>
+  :root{
+    --bg:#111417;
+    --panel:#1a1e23;
+    --panel2:#20252b;
+    --line:#2a3038;
+    --text:#e6e9ec;
+    --dim:#8a939c;
+    --accent:#4fb0ff;
+    --accent2:#ff9f4f;
+    --danger:#ff5f6d;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+  html,body{
+    margin:0;padding:0;height:100%;
+    background:var(--bg);color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+    overscroll-behavior:none;
+  }
+  #app{
+    display:flex;flex-direction:column;height:100vh;height:100dvh;
+  }
+  header{
+    padding:10px 14px;border-bottom:1px solid var(--line);
+    display:flex;align-items:center;justify-content:space-between;gap:8px;
+    background:var(--panel);flex:0 0 auto;
+  }
+  header h1{font-size:15px;margin:0;font-weight:600;letter-spacing:.2px;}
+  header .sub{font-size:11px;color:var(--dim);}
+
+  #stage-wrap{
+    position:relative;flex:1 1 auto;min-height:0;
+    background:
+      linear-gradient(45deg,#181c20 25%,transparent 25%) -8px 0/16px 16px,
+      linear-gradient(-45deg,#181c20 25%,transparent 25%) -8px 0/16px 16px,
+      linear-gradient(45deg,transparent 75%,#181c20 75%) -8px 0/16px 16px,
+      linear-gradient(-45deg,transparent 75%,#181c20 75%) -8px 0/16px 16px,
+      #14171a;
+    overflow:hidden;
+    display:flex;align-items:center;justify-content:center;
+    touch-action:none;
+  }
+  #stage-wrap.empty::after{
+    content:"點擊下方「選擇圖片」開始";
+    color:var(--dim);font-size:13px;
+  }
+  canvas#view{
+    max-width:100%;max-height:100%;
+    display:block;
+    touch-action:none;
+  }
+
+  #toolbar{
+    flex:0 0 auto;background:var(--panel);
+    border-top:1px solid var(--line);
+    padding:8px 10px calc(8px + env(safe-area-inset-bottom));
+    display:flex;flex-direction:column;gap:8px;
+    max-height:40vh;overflow-y:auto;-webkit-overflow-scrolling:touch;
+  }
+  #stage-wrap{ min-height:220px; }
+
+  /* ---- Recording overlay: shown ON TOP of the image, in stage-wrap ---- */
+  #recCountdown{
+    position:absolute;inset:0;display:none;align-items:center;justify-content:center;
+    pointer-events:none;z-index:20;
+  }
+  #recCountdown.show{display:flex;}
+  #recCountdown .num{
+    font-size:64px;font-weight:800;color:#fff;line-height:1;
+    width:120px;height:120px;border-radius:50%;
+    display:flex;align-items:center;justify-content:center;
+    background:radial-gradient(circle at 35% 30%, rgba(255,255,255,.12), rgba(0,0,0,.55) 70%);
+    border:2px solid rgba(255,255,255,.35);
+    box-shadow:0 8px 30px rgba(0,0,0,.5), inset 0 0 0 1px rgba(255,255,255,.06);
+    text-shadow:0 3px 14px rgba(0,0,0,.65);
+    animation:recCountPulse .6s cubic-bezier(.2,.8,.3,1.2);
+  }
+  @keyframes recCountPulse{
+    0%{transform:scale(.55);opacity:0;}
+    55%{transform:scale(1.1);opacity:1;}
+    100%{transform:scale(1);opacity:1;}
+  }
+  #recBadge{
+    position:absolute;top:10px;right:10px;z-index:20;
+    display:none;align-items:center;gap:7px;
+    background:rgba(12,14,17,.78);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);
+    border:1px solid rgba(255,255,255,.14);
+    color:#fff;font-size:12.5px;font-weight:700;letter-spacing:.4px;
+    padding:6px 12px 6px 9px;border-radius:100px;
+    box-shadow:0 6px 18px rgba(0,0,0,.4);
+    font-variant-numeric:tabular-nums;
+  }
+  #recBadge.show{display:flex;}
+  #recBadge .dot{
+    width:8px;height:8px;border-radius:50%;background:var(--danger);
+    box-shadow:0 0 8px var(--danger);
+    animation:recDotBlink 1s ease-in-out infinite;
+  }
+  @keyframes recDotBlink{
+    0%,100%{opacity:1;} 50%{opacity:.25;}
+  }
+  .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;}
+  .row.between{justify-content:space-between;}
+
+  button, label.filebtn{
+    appearance:none;border:1px solid var(--line);
+    background:var(--panel2);color:var(--text);
+    font-size:12.5px;padding:9px 12px;border-radius:9px;
+    display:inline-flex;align-items:center;gap:6px;
+    cursor:pointer;user-select:none;white-space:nowrap;
+    transition:background .15s,border-color .15s;
+  }
+  button:active, label.filebtn:active{background:#262c33;}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#06121c;font-weight:600;}
+  button.warn{border-color:var(--danger);color:var(--danger);}
+  button:disabled{opacity:.35;pointer-events:none;}
+  button.small{padding:6px 9px;font-size:11.5px;}
+  input[type=file]{display:none;}
+
+  .grow{flex:1 1 auto;min-width:0;}
+
+  details#panel, details.subpanel{
+    background:var(--panel2);border:1px solid var(--line);
+    border-radius:10px;padding:6px 10px 10px;
+  }
+  details#panel summary, details.subpanel summary{
+    cursor:pointer;font-size:12.5px;color:var(--dim);
+    padding:6px 0;list-style:none;display:flex;align-items:center;justify-content:space-between;
+  }
+  details#panel summary::-webkit-details-marker, details.subpanel summary::-webkit-details-marker{display:none;}
+  details#panel summary::after, details.subpanel summary::after{content:"展開 ▾";}
+  details#panel[open] summary::after, details.subpanel[open] summary::after{content:"收合 ▴";}
+
+  .sliders{display:grid;grid-template-columns:1fr;gap:10px;margin-top:4px;}
+  .slider{display:flex;flex-direction:column;gap:3px;}
+  .slider .label{display:flex;justify-content:space-between;font-size:11.5px;color:var(--dim);}
+  .slider .label b{color:var(--text);font-weight:600;}
+  input[type=range]{
+    -webkit-appearance:none;width:100%;height:26px;background:transparent;
+  }
+  input[type=range]::-webkit-slider-runnable-track{
+    height:4px;border-radius:2px;background:var(--line);
+  }
+  input[type=range]::-webkit-slider-thumb{
+    -webkit-appearance:none;width:18px;height:18px;border-radius:50%;
+    background:var(--accent);margin-top:-7px;border:2px solid #06121c;
+  }
+
+  #debug{
+    font-size:10.5px;color:var(--dim);line-height:1.5;
+    background:var(--panel2);border:1px solid var(--line);border-radius:10px;
+    padding:6px 10px;white-space:pre-wrap;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  }
+
+  #motion-gate{
+    position:fixed;inset:0;background:rgba(10,12,14,.92);
+    display:none;align-items:center;justify-content:center;z-index:50;
+    flex-direction:column;gap:14px;text-align:center;padding:24px;
+  }
+  #motion-gate.show{display:flex;}
+  #motion-gate p{color:var(--dim);font-size:13px;max-width:280px;margin:0;}
+
+  .badge{
+    font-size:10.5px;padding:2px 7px;border-radius:100px;border:1px solid var(--line);color:var(--dim);
+  }
+  .badge.on{color:#0d2b12;background:#5bd97a;border-color:#5bd97a;}
+
+  #recordPanel{
+    background:var(--panel2);border:1px solid var(--line);
+    border-radius:10px;padding:10px 10px 12px;
+    display:flex;flex-direction:column;gap:9px;
+  }
+  #recordPanel .rTitle{font-size:13px;font-weight:600;color:var(--text);}
+  #recordPanel .rSub{font-size:11px;color:var(--dim);margin-top:1px;}
+  #btnRecord{
+    appearance:none;border:none;border-radius:12px;
+    background:linear-gradient(90deg,var(--accent),#c98bff 55%,var(--accent2));
+    color:#06121c;font-weight:700;font-size:13.5px;
+    padding:12px;width:100%;justify-content:center;
+    cursor:pointer;user-select:none;
+  }
+  #btnRecord:disabled{opacity:.35;pointer-events:none;}
+  .rFields{display:flex;gap:8px;}
+  .rField{flex:1 1 0;min-width:0;display:flex;flex-direction:column;gap:4px;}
+  .rField .flabel{font-size:11.5px;color:var(--dim);}
+  #recordPanel select{
+    appearance:none;-webkit-appearance:none;width:100%;
+    border:1px solid var(--line);background:var(--panel);color:var(--text);
+    font-size:12.5px;padding:9px 10px;border-radius:9px;
+  }
+  .rCheck{
+    display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--dim);
+  }
+  #recordStatus{font-size:11px;color:var(--dim);min-height:14px;}
+  #downloadLink{justify-content:center;display:none;}
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <div>
+      <h1>局部果凍物理模擬</h1>
+      <div class="sub">圈選區域 → 搖晃手機或按衝量測試</div>
+    </div>
+    <span class="badge" id="sensorBadge" style="cursor:pointer;">感應器：未啟動</span>
+  </header>
+
+  <div id="stage-wrap" class="empty">
+    <canvas id="view"></canvas>
+    <div id="recCountdown"></div>
+    <div id="recBadge"><span class="dot"></span><span id="recBadgeText">REC 00:05</span></div>
+  </div>
+
+  <div id="toolbar">
+    <div class="row between">
+      <label class="filebtn grow" for="fileInput">📷 選擇圖片
+        <input type="file" id="fileInput" accept="image/*">
+      </label>
+      <button id="btnMotion" class="small">啟動感應器</button>
+    </div>
+
+    <div class="row between">
+      <button id="btnUndo" class="small" disabled>↩ 復原選區</button>
+      <button id="btnClear" class="small warn" disabled>🗑 清除全部</button>
+      <button id="btnImpulse" class="small" disabled>💥 模擬衝量</button>
+      <button id="btnToggleOutline" class="small grow" disabled>🙈 隱藏圈圈</button>
+    </div>
+
+    <details id="panel">
+      <summary>物理參數</summary>
+      <div class="sliders">
+        <div class="slider">
+          <div class="label"><span>敏感度</span><b id="vSens">1.0</b></div>
+          <input type="range" id="sSens" min="0.1" max="4" step="0.05" value="1.0">
+        </div>
+        <div class="slider">
+          <div class="label"><span>彈力 stiffness</span><b id="vStiff">90</b></div>
+          <input type="range" id="sStiff" min="4" max="80" step="1" value="18">
+        </div>
+        <div class="slider">
+          <div class="label"><span>阻尼 damping</span><b id="vDamp">1.2</b></div>
+          <input type="range" id="sDamp" min="0.2" max="8" step="0.1" value="1.2">
+        </div>
+        <div class="slider">
+          <div class="label"><span>最大位移(px)</span><b id="vMaxDisp">60</b></div>
+          <input type="range" id="sMaxDisp" min="10" max="160" step="1" value="60">
+        </div>
+      </div>
+      <p style="font-size:11px;color:var(--dim);margin:8px 0 0;line-height:1.5;">
+        果凍感訣竅：<b>彈力(stiffness)調低</b>、<b>阻尼(damping)也調低</b> 才會晃很多下才停下來；
+        彈力高或阻尼高都會讓它「抖一下立刻停」，變成死板的位移而不是搖晃。
+      </p>
+    </details>
+
+    <details class="subpanel" id="debugPanel">
+      <summary>除錯資訊</summary>
+      <div id="debug" style="margin-top:6px;">等待資料…</div>
+    </details>
+
+    <div id="recordPanel">
+      <div>
+        <span class="rTitle">錄製並儲存</span>
+        <div class="rSub">錄製搖晃圖片時的動作（3秒後開始錄製）</div>
+      </div>
+      <button id="btnRecord" disabled>⏺ 開始錄製</button>
+      <details class="subpanel" id="recordOptions">
+        <summary>錄製設定（格式・時間・畫面效果）</summary>
+        <div class="rFields" style="margin-top:6px;">
+          <div class="rField">
+            <div class="flabel">格式</div>
+            <select id="selFormat"></select>
+          </div>
+          <div class="rField">
+            <div class="flabel">錄製時間</div>
+            <select id="selDuration">
+              <option value="3">3秒</option>
+              <option value="5" selected>5秒</option>
+              <option value="8">8秒</option>
+              <option value="10">10秒</option>
+            </select>
+          </div>
+        </div>
+        <label class="rCheck" style="margin-top:8px;"><input type="checkbox" id="chkHideOutlineRec" checked> 錄製時隱藏圈選外框（只保留果凍晃動效果）</label>
+      </details>
+      <div id="recordStatus"></div>
+      <a id="downloadLink" class="filebtn">⬇ 下載影片</a>
+    </div>
+  </div>
+</div>
+
+<div id="motion-gate">
+  <p>此裝置（iOS）需要授權才能讀取加速度感應器，才能驅動晃動效果。</p>
+  <button class="primary" id="btnGrantMotion">允許動作感應</button>
+  <button class="small" id="btnSkipMotion">略過，只用桌面模擬按鈕</button>
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  // ---------- DOM ----------
+  const stageWrap = document.getElementById('stage-wrap');
+  const canvas = document.getElementById('view');
+  const ctx = canvas.getContext('2d');
+  const fileInput = document.getElementById('fileInput');
+  const btnMotion = document.getElementById('btnMotion');
+  const btnUndo = document.getElementById('btnUndo');
+  const btnClear = document.getElementById('btnClear');
+  const btnImpulse = document.getElementById('btnImpulse');
+  const btnToggleOutline = document.getElementById('btnToggleOutline');
+  const debugEl = document.getElementById('debug');
+  const sensorBadge = document.getElementById('sensorBadge');
+  sensorBadge.addEventListener('click', ()=>{ if(!motionActive) showMotionTroubleshoot(); });
+
+  const sSens = document.getElementById('sSens');
+  const sStiff = document.getElementById('sStiff');
+  const sDamp = document.getElementById('sDamp');
+  const sMaxDisp = document.getElementById('sMaxDisp');
+  const vSens = document.getElementById('vSens');
+  const vStiff = document.getElementById('vStiff');
+  const vDamp = document.getElementById('vDamp');
+  const vMaxDisp = document.getElementById('vMaxDisp');
+
+  const motionGate = document.getElementById('motion-gate');
+  const btnGrantMotion = document.getElementById('btnGrantMotion');
+  const btnSkipMotion = document.getElementById('btnSkipMotion');
+
+  // ---------- Params ----------
+  const params = {
+    sensitivity: parseFloat(sSens.value),
+    stiffness: parseFloat(sStiff.value),
+    damping: parseFloat(sDamp.value),
+    maxDisp: parseFloat(sMaxDisp.value)
+  };
+  function bindSlider(input, label, key, fmt){
+    input.addEventListener('input', ()=>{
+      params[key] = parseFloat(input.value);
+      label.textContent = fmt ? fmt(params[key]) : params[key];
+    });
+  }
+  bindSlider(sSens, vSens, 'sensitivity', v=>v.toFixed(2));
+  bindSlider(sStiff, vStiff, 'stiffness', v=>Math.round(v));
+  bindSlider(sDamp, vDamp, 'damping', v=>v.toFixed(2));
+  bindSlider(sMaxDisp, vMaxDisp, 'maxDisp', v=>Math.round(v));
+
+  // ---------- Image / canvas sizing ----------
+  let img = null;
+  let imgW = 0, imgH = 0;      // natural size
+  let drawScale = 1;           // canvas css px per image px
+  let canvasCssW = 0, canvasCssH = 0;
+  let dpr = Math.max(1, window.devicePixelRatio || 1);
+
+  function fitCanvasToImage(){
+    if(!img) return;
+    const wrapRect = stageWrap.getBoundingClientRect();
+    const availW = wrapRect.width - 4;
+    const availH = wrapRect.height - 4;
+    const scale = Math.min(availW / imgW, availH / imgH, 1) || 1;
+    drawScale = scale;
+    canvasCssW = Math.round(imgW * scale);
+    canvasCssH = Math.round(imgH * scale);
+    canvas.style.width = canvasCssW + 'px';
+    canvas.style.height = canvasCssH + 'px';
+    canvas.width = Math.round(canvasCssW * dpr);
+    canvas.height = Math.round(canvasCssH * dpr);
+  }
+
+  window.addEventListener('resize', ()=>{ fitCanvasToImage(); });
+
+  fileInput.addEventListener('change', (e)=>{
+    const f = e.target.files && e.target.files[0];
+    if(!f) return;
+    const url = URL.createObjectURL(f);
+    const im = new Image();
+    im.onload = ()=>{
+      img = im;
+      imgW = im.naturalWidth;
+      imgH = im.naturalHeight;
+      regions.length = 0;
+      updateRegionButtons();
+      stageWrap.classList.remove('empty');
+      fitCanvasToImage();
+      buildOffscreen();
+      if(recordingSupported) btnRecord.disabled = false;
+      URL.revokeObjectURL(url);
+    };
+    im.src = url;
+  });
+
+  // Offscreen full-res source canvas for pixel sampling during warp
+  let off = document.createElement('canvas');
+  let offCtx = off.getContext('2d');
+  function buildOffscreen(){
+    off.width = imgW;
+    off.height = imgH;
+    offCtx.clearRect(0,0,imgW,imgH);
+    offCtx.drawImage(img,0,0,imgW,imgH);
+  }
+
+  // ---------- Regions (ellipses) ----------
+  // Each region: cx,cy,rx,ry in IMAGE pixel space; plus its own spring-mass state.
+  let regions = [];
+  let showOutlines = true;
+  let drawingRegion = null; // in-progress rubber band {x0,y0,x1,y1} in image space
+  let selectMode = true;
+
+  function updateRegionButtons(){
+    btnUndo.disabled = regions.length === 0;
+    btnClear.disabled = regions.length === 0;
+    btnImpulse.disabled = regions.length === 0 || !img;
+    btnToggleOutline.disabled = regions.length === 0 || !img;
+  }
+
+  function canvasPosToImagePos(clientX, clientY){
+    const rect = canvas.getBoundingClientRect();
+    const x = (clientX - rect.left) / drawScale;
+    const y = (clientY - rect.top) / drawScale;
+    return {x, y};
+  }
+
+  function makeRegion(x0,y0,x1,y1){
+    const cx = (x0+x1)/2, cy=(y0+y1)/2;
+    const rx = Math.max(8, Math.abs(x1-x0)/2);
+    const ry = Math.max(8, Math.abs(y1-y0)/2);
+    return {
+      cx, cy, rx, ry,
+      // spring-mass state: displacement (dx,dy) and velocity (vx,vy)
+      dx:0, dy:0, vx:0, vy:0
+    };
+  }
+
+  // ---------- Pointer interaction for drawing ellipses ----------
+  let dragStart = null;
+  function pointerDown(clientX, clientY){
+    if(!img) return;
+    dragStart = canvasPosToImagePos(clientX, clientY);
+    drawingRegion = {x0:dragStart.x, y0:dragStart.y, x1:dragStart.x, y1:dragStart.y};
+  }
+  function pointerMove(clientX, clientY){
+    if(!dragStart) return;
+    const p = canvasPosToImagePos(clientX, clientY);
+    drawingRegion.x1 = p.x;
+    drawingRegion.y1 = p.y;
+  }
+  function pointerUp(){
+    if(!dragStart || !drawingRegion) { dragStart=null; drawingRegion=null; return; }
+    const w = Math.abs(drawingRegion.x1 - drawingRegion.x0);
+    const h = Math.abs(drawingRegion.y1 - drawingRegion.y0);
+    if(w > 6 && h > 6){
+      regions.push(makeRegion(drawingRegion.x0, drawingRegion.y0, drawingRegion.x1, drawingRegion.y1));
+      updateRegionButtons();
+    }
+    dragStart = null;
+    drawingRegion = null;
+  }
+
+  canvas.addEventListener('mousedown', (e)=>{ pointerDown(e.clientX, e.clientY); });
+  window.addEventListener('mousemove', (e)=>{ pointerMove(e.clientX, e.clientY); });
+  window.addEventListener('mouseup', ()=>{ pointerUp(); });
+
+  canvas.addEventListener('touchstart', (e)=>{
+    if(e.touches.length===1){
+      pointerDown(e.touches[0].clientX, e.touches[0].clientY);
+      e.preventDefault();
+    }
+  }, {passive:false});
+  canvas.addEventListener('touchmove', (e)=>{
+    if(e.touches.length===1 && dragStart){
+      pointerMove(e.touches[0].clientX, e.touches[0].clientY);
+      e.preventDefault();
+    }
+  }, {passive:false});
+  canvas.addEventListener('touchend', (e)=>{ pointerUp(); }, {passive:false});
+  canvas.addEventListener('touchcancel', (e)=>{ pointerUp(); }, {passive:false});
+
+  btnUndo.addEventListener('click', ()=>{
+    regions.pop();
+    updateRegionButtons();
+  });
+  btnClear.addEventListener('click', ()=>{
+    regions.length = 0;
+    updateRegionButtons();
+  });
+
+  // ---------- Motion input: gravity-removed acceleration ----------
+  // We estimate gravity via a low-pass filter and subtract it (high-pass) to get
+  // linear (user) acceleration, so a phone at rest yields ~0 driving force.
+  let gEst = {x:0, y:0, z:0};
+  let linAcc = {x:0, y:0, z:0}; // gravity-removed, device frame
+  const GRAVITY_ALPHA = 0.08; // low-pass filter coefficient for gravity estimate
+  let motionActive = false;
+  let usingDeviceMotionAccelIncludingGravity = false;
+
+  function handleMotion(ax, ay, az, hasGravityRemovedNatively){
+    if(hasGravityRemovedNatively){
+      // event.acceleration already excludes gravity (not all browsers support it)
+      linAcc.x = ax; linAcc.y = ay; linAcc.z = az;
+    } else {
+      // low-pass to estimate gravity
+      gEst.x = gEst.x + GRAVITY_ALPHA * (ax - gEst.x);
+      gEst.y = gEst.y + GRAVITY_ALPHA * (ay - gEst.y);
+      gEst.z = gEst.z + GRAVITY_ALPHA * (az - gEst.z);
+      // high-pass: subtract slow-moving gravity component
+      linAcc.x = ax - gEst.x;
+      linAcc.y = ay - gEst.y;
+      linAcc.z = az - gEst.z;
+    }
+  }
+
+  function onDeviceMotion(e){
+    motionActive = true;
+    sensorBadge.textContent = '感應器：運作中';
+    sensorBadge.classList.add('on');
+    const withG = e.accelerationIncludingGravity;
+    const withoutG = e.acceleration;
+    if(withoutG && (withoutG.x!==null && withoutG.x!==undefined)){
+      handleMotion(withoutG.x||0, withoutG.y||0, withoutG.z||0, true);
+    } else if(withG && (withG.x!==null && withG.x!==undefined)){
+      handleMotion(withG.x||0, withG.y||0, withG.z||0, false);
+    }
+  }
+
+  // After requesting/attaching the listener, watch whether any event actually
+  // arrives. Many Android browsers (recent Chrome/Samsung Internet) silently
+  // deliver zero devicemotion events over insecure/non-HTTPS contexts, or when
+  // a site permission ("Motion sensors") has been blocked — with no exception
+  // thrown, so we can't detect it any other way except a timeout.
+  function armMotionWatchdog(){
+    btnMotion.textContent = '感應器啟動中…';
+    btnMotion.disabled = true;
+    sensorBadge.textContent = '感應器：等待資料…';
+    const startedAt = performance.now();
+    const checkAfterMs = 2000;
+    setTimeout(()=>{
+      if(motionActive){
+        btnMotion.textContent = '感應器已啟動';
+      } else {
+        btnMotion.textContent = '未收到資料，點此查看原因';
+        btnMotion.disabled = false;
+        sensorBadge.textContent = '感應器：無資料';
+        btnMotion.onclick = showMotionTroubleshoot;
+      }
+    }, checkAfterMs);
+  }
+
+  function showMotionTroubleshoot(){
+    const isSecure = window.isSecureContext;
+    const ua = navigator.userAgent || '';
+    const isSamsungBrowser = /SamsungBrowser/i.test(ua);
+    const isAndroid = /Android/i.test(ua);
+
+    let msg = '沒有收到動作感應資料。\n\n';
+
+    if(!isSecure){
+      msg += '⚠ 這個頁面目前不是用 https:// 開啟（可能是用檔案總管直接雙擊 HTML 檔）。\n' +
+             'Android 瀏覽器一律會封鎖非安全連線下的動作感應器，必須先把檔案放到\n' +
+             '一個 https:// 網址上（例如上傳到任一靜態網頁空間），再用該網址開啟。\n' +
+             '這通常是三星手機上最常見的原因。\n\n';
+    }
+
+    if(isAndroid){
+      msg += '三星 S25 系列（Android）重新授權步驟：\n' +
+        (isSamsungBrowser
+          ? '1. 網址列左側點「鎖頭／ⓘ」圖示\n' +
+            '2. 點「網站權限」或「權限」\n' +
+            '3. 找「動作與方向感應器 / Motion sensors」，改為「允許」\n' +
+            '4. 回到系統設定 → App → Samsung Internet → 權限 → 確認「實體活動/身體活動」或「感應器」未被關閉\n' +
+            '5. 重新整理此頁面，再按一次「啟動感應器」\n'
+          : '1. 網址列左側點「鎖頭」圖示 → 「網站設定」\n' +
+            '2. 找「動作感應器 Motion sensors」，改為「允許」\n' +
+            '   （若列表中沒有這個選項，代表瀏覽器版本尚未把它當成可調整權限，\n' +
+            '    通常表示問題其實是 https 或系統層級權限，請看上方 HTTPS 提示）\n' +
+            '3. 重新整理此頁面，再按一次「啟動感應器」\n') +
+        '\n如果上面設定都是「允許」但依然沒有數據，試著：\n' +
+        '• 完全關閉瀏覽器分頁重開（而不是切換分頁）\n' +
+        '• 確認手機系統設定裡沒有省電模式限制背景感應器\n\n';
+    }
+
+    msg += '在排查期間，可以先用「模擬衝量」按鈕測試果凍晃動效果本身是否正常。';
+
+    alert(msg);
+  }
+
+  async function startMotion(){
+    if(typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function'){
+      // iOS 13+: needs explicit user-gesture permission
+      motionGate.classList.add('show');
+    } else if(window.DeviceMotionEvent){
+      window.addEventListener('devicemotion', onDeviceMotion);
+      armMotionWatchdog();
+    } else {
+      sensorBadge.textContent = '感應器：裝置不支援';
+      btnMotion.disabled = true;
+      btnMotion.textContent = '裝置不支援';
+    }
+  }
+  btnMotion.addEventListener('click', startMotion);
+
+  btnGrantMotion.addEventListener('click', async ()=>{
+    try{
+      const res = await DeviceMotionEvent.requestPermission();
+      if(res === 'granted'){
+        window.addEventListener('devicemotion', onDeviceMotion);
+        armMotionWatchdog();
+      } else {
+        // On Android, some Chromium-based browsers (Samsung Internet, recent
+        // Chrome) now also expose requestPermission() but resolve it with
+        // 'denied' whenever the site-level "Motion sensors" permission was
+        // previously blocked — calling it again does NOT re-prompt. The only
+        // way to fix this is to reset that permission from the browser's own
+        // site-settings UI, which differs from the iOS flow, so we show
+        // device-appropriate instructions instead of a dead-end message.
+        sensorBadge.textContent = '感應器：授權遭拒';
+        btnMotion.textContent = '點此查看如何授權';
+        btnMotion.disabled = false;
+        btnMotion.onclick = showMotionTroubleshoot;
+      }
+    }catch(err){
+      sensorBadge.textContent = '感應器：授權失敗';
+      btnMotion.textContent = '點此查看如何授權';
+      btnMotion.disabled = false;
+      btnMotion.onclick = showMotionTroubleshoot;
+    }
+    motionGate.classList.remove('show');
+  });
+  btnSkipMotion.addEventListener('click', ()=>{
+    motionGate.classList.remove('show');
+  });
+
+  // ---------- Impulse test button (desktop) ----------
+  // Injected directly as a velocity kick (not a short-lived acceleration),
+  // so it reliably overcomes stiffness/damping regardless of frame timing.
+  // With low stiffness/damping this now produces several visible oscillation
+  // cycles before settling, like a real jelly wobble.
+  btnImpulse.addEventListener('click', ()=>{
+    if(regions.length === 0) return;
+    const kick = 340 * params.sensitivity; // px/sec
+    for(const r of regions){
+      r.vy += -kick;                     // upward-biased "weighty" kick
+      r.vx += (Math.random()*2-1) * kick * 0.3;
+    }
+  });
+
+  // ---------- Physics update ----------
+  // Each region behaves as an independent 2D spring-mass-damper:
+  //   a = -stiffness*disp - damping*vel + drivingForce
+  // drivingForce comes from linAcc (gravity-removed) scaled by sensitivity,
+  // with extra weighting on vertical (y) axis per spec, plus a bit of horizontal.
+  let lastT = performance.now();
+
+  function stepPhysics(now){
+    const dt = Math.min(0.05, Math.max(0.001, (now - lastT) / 1000));
+    lastT = now;
+
+    // Device motion axes -> screen axes (rough, portrait-oriented mapping):
+    // ax (left-right of device) -> horizontal screen displacement
+    // ay (up-down of device)    -> vertical screen displacement (dominant)
+    // Coefficient raised substantially: typical shake linAcc is only a few
+    // m/s^2, and with low stiffness a much larger force is needed to produce
+    // a visible, jelly-like swing rather than a barely-perceptible nudge.
+    let driveX = (linAcc.x || 0) * params.sensitivity * 26;
+    let driveY = -(linAcc.y || 0) * params.sensitivity * 26;
+    // emphasize vertical per spec: horizontal contributes less
+    driveX *= 0.35;
+
+    for(const r of regions){
+      const ax = -params.stiffness * r.dx - params.damping * r.vx + driveX;
+      const ay = -params.stiffness * r.dy - params.damping * r.vy + driveY;
+      r.vx += ax * dt;
+      r.vy += ay * dt;
+      r.dx += r.vx * dt;
+      r.dy += r.vy * dt;
+      // Absolute safety bound on the internal (unclamped) state so sustained
+      // strong shaking can't accumulate energy indefinitely if damping is
+      // set very low — keeps the simulation numerically stable without
+      // affecting normal jelly-like behavior (bound is far above maxDisp).
+      const hardBound = params.maxDisp * 4;
+      if(Math.abs(r.dx) > hardBound){ r.dx = Math.sign(r.dx) * hardBound; r.vx *= 0.5; }
+      if(Math.abs(r.dy) > hardBound){ r.dy = Math.sign(r.dy) * hardBound; r.vy *= 0.5; }
+      // Soft limit instead of a hard clamp, applied to a separate rendered
+      // value so the spring's internal true displacement/velocity are never
+      // altered — only what gets drawn is compressed as it approaches
+      // maxDisp (tanh), giving a natural deceleration near the limit instead
+      // of a jarring hard stop, while the physics itself stays undamped by it.
+      const mag = Math.hypot(r.dx, r.dy);
+      if(mag > 0.0001){
+        const softMag = params.maxDisp * Math.tanh(mag / params.maxDisp);
+        const k = softMag / mag;
+        r.renderDx = r.dx * k;
+        r.renderDy = r.dy * k;
+      } else {
+        r.renderDx = 0;
+        r.renderDy = 0;
+      }
+    }
+  }
+
+  // ---------- Rendering ----------
+  // For each region we render a warped patch: sample source pixels with a per-pixel
+  // offset that is (region displacement) * falloff(distance from center), falloff
+  // smoothly goes 1 at center -> 0 at ellipse edge (smoothstep on normalized radius).
+  const GRID = 10; // mesh resolution per region — the triangle-mesh warp is
+  // continuous within each triangle (unlike the old per-block translate), so
+  // a much coarser grid still looks smooth; keeping this low matters a lot
+  // for performance since each cell now costs 2 drawImage calls.
+
+  function smoothFalloff(t){
+    // t: 0 at center, 1 at edge. Returns 1 at center -> 0 at edge.
+    const c = Math.min(1, Math.max(0, t));
+    const s = 1 - c;
+    return s*s*(3 - 2*s) === s*s*(3-2*s) ? (s*s*(3-2*s)) : s; // smoothstep(s)
+  }
+
+  function drawFrame(){
+    if(!img){ requestAnimationFrame(drawFrame); return; }
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+    ctx.clearRect(0,0,canvasCssW,canvasCssH);
+    ctx.drawImage(img, 0, 0, imgW, imgH, 0, 0, canvasCssW, canvasCssH);
+
+    for(const r of regions){
+      renderRegionWarp(r);
+    }
+
+    // rubber-band while drawing
+    if(drawingRegion){
+      const x0 = Math.min(drawingRegion.x0, drawingRegion.x1) * drawScale;
+      const y0 = Math.min(drawingRegion.y0, drawingRegion.y1) * drawScale;
+      const w = Math.abs(drawingRegion.x1 - drawingRegion.x0) * drawScale;
+      const h = Math.abs(drawingRegion.y1 - drawingRegion.y0) * drawScale;
+      ctx.save();
+      ctx.strokeStyle = 'rgba(79,176,255,0.9)';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([5,4]);
+      ctx.strokeRect(x0,y0,w,h);
+      ctx.restore();
+    }
+
+    // existing region outlines (subtle) — user can hide these via the
+    // "隱藏圈圈" toggle so only the jelly deformation itself is visible.
+    if(showOutlines){
+      for(const r of regions){
+        ctx.save();
+        ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.ellipse(
+          (r.cx + (r.renderDx||0)) * drawScale, (r.cy + (r.renderDy||0)) * drawScale,
+          r.rx * drawScale, r.ry * drawScale, 0, 0, Math.PI*2
+        );
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+
+    requestAnimationFrame(drawFrame);
+  }
+
+  // ---------- Mesh warp rendering (continuous, no seams) ----------
+  // Each region is a regular grid of *shared* vertices covering its bounding
+  // area. Every vertex gets its own displaced position based on the same
+  // falloff field. Because adjacent quads share vertices, there is no gap or
+  // overlap between them — this replaces the earlier per-cell "translate a
+  // whole block" approach, which tore at the seams whenever neighboring
+  // cells had different falloff values.
+  //
+  // Canvas 2D has no native quad/mesh texture mapping, so each quad is split
+  // into two triangles and each triangle is drawn via an affine transform
+  // (the standard triangle-affine-texture-map technique): map the 3 source
+  // triangle vertices to the 3 destination (displaced) vertices by solving
+  // for the 2x3 affine matrix, then draw the corresponding source triangle
+  // through that transform, clipped to the destination triangle.
+
+  function drawTexturedTriangle(image, sx0,sy0, sx1,sy1, sx2,sy2, dx0,dy0, dx1,dy1, dx2,dy2){
+    ctx.save();
+    // Clip to destination triangle
+    ctx.beginPath();
+    ctx.moveTo(dx0, dy0);
+    ctx.lineTo(dx1, dy1);
+    ctx.lineTo(dx2, dy2);
+    ctx.closePath();
+    ctx.clip();
+
+    // Solve affine transform mapping (sx0,sy0)->(dx0,dy0) etc.
+    // [a c e]   [sx]   [dx]
+    // [b d f] * [sy] = [dy]
+    // [0 0 1]   [1 ]   [1 ]
+    const denom = sx0*(sy1-sy2) - sx1*(sy0-sy2) + sx2*(sy0-sy1);
+    if(Math.abs(denom) < 1e-8){ ctx.restore(); return; }
+
+    const a = (dx0*(sy1-sy2) - dx1*(sy0-sy2) + dx2*(sy0-sy1)) / denom;
+    const b = (dy0*(sy1-sy2) - dy1*(sy0-sy2) + dy2*(sy0-sy1)) / denom;
+    const c = (sx0*(dx1-dx2) - sx1*(dx0-dx2) + sx2*(dx0-dx1)) / denom;
+    const d = (sx0*(dy1-dy2) - sx1*(dy0-dy2) + sx2*(dy0-dy1)) / denom;
+    const e = (sx0*(sy1*dx2 - sy2*dx1) - sx1*(sy0*dx2 - sy2*dx0) + sx2*(sy0*dx1 - sy1*dx0)) / denom;
+    const f = (sx0*(sy1*dy2 - sy2*dy1) - sx1*(sy0*dy2 - sy2*dy0) + sx2*(sy0*dy1 - sy1*dy0)) / denom;
+
+    ctx.setTransform(dpr*a, dpr*b, dpr*c, dpr*d, dpr*e, dpr*f);
+    ctx.drawImage(image, 0, 0);
+    ctx.restore();
+  }
+
+  function renderRegionWarp(r){
+    const rdx = r.renderDx || 0;
+    const rdy = r.renderDy || 0;
+    const pad = 1.15;
+    const extraX = Math.abs(rdx);
+    const extraY = Math.abs(rdy);
+    const halfW = r.rx*pad + extraX;
+    const halfH = r.ry*pad + extraY;
+    const bx0 = r.cx - halfW, by0 = r.cy - halfH;
+    const bw = halfW*2, bh = halfH*2;
+
+    const cols = GRID, rows = GRID;
+    const cellW = bw / cols;
+    const cellH = bh / rows;
+
+    // Build a (cols+1) x (rows+1) grid of shared vertices: source position
+    // and displaced (destination) position, both in image space.
+    const srcPts = [];
+    const dstPts = [];
+    for(let j=0;j<=rows;j++){
+      const rowSrc = [];
+      const rowDst = [];
+      for(let i=0;i<=cols;i++){
+        const sx = bx0 + i*cellW;
+        const sy = by0 + j*cellH;
+        const nx = (sx - r.cx) / r.rx;
+        const ny = (sy - r.cy) / r.ry;
+        const t = Math.sqrt(nx*nx + ny*ny);
+        const fall = smoothFalloff(Math.min(1, t));
+        const dxp = sx + rdx * fall;
+        const dyp = sy + rdy * fall;
+        rowSrc.push([sx, sy]);
+        rowDst.push([dxp * drawScale, dyp * drawScale]);
+      }
+      srcPts.push(rowSrc);
+      dstPts.push(rowDst);
+    }
+
+    ctx.save();
+    // Clip the whole region to the displaced ellipse boundary once, so any
+    // sub-pixel triangle overdraw at the outer rim still stays within a
+    // clean silhouette rather than smearing past it.
+    ctx.beginPath();
+    ctx.ellipse(
+      (r.cx + rdx*0.5)*drawScale, (r.cy + rdy*0.5)*drawScale,
+      (r.rx*pad + extraX)*drawScale, (r.ry*pad + extraY)*drawScale, 0, 0, Math.PI*2
+    );
+    ctx.clip();
+
+    for(let j=0;j<rows;j++){
+      for(let i=0;i<cols;i++){
+        const s00 = srcPts[j][i],   s10 = srcPts[j][i+1];
+        const s01 = srcPts[j+1][i], s11 = srcPts[j+1][i+1];
+        const d00 = dstPts[j][i],   d10 = dstPts[j][i+1];
+        const d01 = dstPts[j+1][i], d11 = dstPts[j+1][i+1];
+
+        // Quad -> two triangles, sharing the diagonal (00,11) so both
+        // triangles agree exactly along that edge (no seam).
+        drawTexturedTriangle(
+          off,
+          s00[0],s00[1], s10[0],s10[1], s11[0],s11[1],
+          d00[0],d00[1], d10[0],d10[1], d11[0],d11[1]
+        );
+        drawTexturedTriangle(
+          off,
+          s00[0],s00[1], s11[0],s11[1], s01[0],s01[1],
+          d00[0],d00[1], d11[0],d11[1], d01[0],d01[1]
+        );
+      }
+    }
+    ctx.restore();
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+  }
+
+  // ---------- Main loop ----------
+  function loop(now){
+    stepPhysics(now);
+    updateDebug();
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+  requestAnimationFrame(drawFrame);
+
+  function updateDebug(){
+    const r0 = regions[0];
+    debugEl.textContent =
+      `加速度 (去重力) x:${(linAcc.x||0).toFixed(2)} y:${(linAcc.y||0).toFixed(2)} z:${(linAcc.z||0).toFixed(2)}\n` +
+      `選取區數量: ${regions.length}` +
+      (r0 ? `  |  區域0位移 dx:${(r0.renderDx||0).toFixed(1)} dy:${(r0.renderDy||0).toFixed(1)}` : '');
+  }
+
+  // ---------- Toggle outline visibility ----------
+  btnToggleOutline.addEventListener('click', ()=>{
+    showOutlines = !showOutlines;
+    btnToggleOutline.textContent = showOutlines ? '🙈 隱藏圈圈' : '👁 顯示圈圈';
+  });
+
+  // ---------- Record & Save ----------
+  // IMPORTANT (fixes "影片很模糊"): the on-screen <canvas id="view"> is
+  // deliberately shrunk by fitCanvasToImage() to fit the phone screen, so
+  // its actual pixel buffer is often much smaller than the source image —
+  // recording that canvas directly bakes in that low resolution. Instead we
+  // render each frame a SECOND time onto a dedicated, never-shown offscreen
+  // canvas sized to the image's native resolution (imgW x imgH), and record
+  // THAT. This keeps quality independent of how small/large the phone shows
+  // the preview on screen.
+  const btnRecord = document.getElementById('btnRecord');
+  const selFormat = document.getElementById('selFormat');
+  const selDuration = document.getElementById('selDuration');
+  const chkHideOutlineRec = document.getElementById('chkHideOutlineRec');
+  const recordStatus = document.getElementById('recordStatus');
+  const downloadLink = document.getElementById('downloadLink');
+
+  let recordingSupported = true;
+  let isRecording = false;
+
+  // ---- Full-resolution offscreen renderer (mirrors drawFrame/renderRegionWarp,
+  // but targets an arbitrary context at scale 1:1 with the source image, so
+  // output resolution == image resolution regardless of on-screen canvas size) ----
+  function drawTexturedTriangleAt(targetCtx, image, sx0,sy0, sx1,sy1, sx2,sy2, dx0,dy0, dx1,dy1, dx2,dy2){
+    targetCtx.save();
+    targetCtx.beginPath();
+    targetCtx.moveTo(dx0, dy0);
+    targetCtx.lineTo(dx1, dy1);
+    targetCtx.lineTo(dx2, dy2);
+    targetCtx.closePath();
+    targetCtx.clip();
+    const denom = sx0*(sy1-sy2) - sx1*(sy0-sy2) + sx2*(sy0-sy1);
+    if(Math.abs(denom) < 1e-8){ targetCtx.restore(); return; }
+    const a = (dx0*(sy1-sy2) - dx1*(sy0-sy2) + dx2*(sy0-sy1)) / denom;
+    const b = (dy0*(sy1-sy2) - dy1*(sy0-sy2) + dy2*(sy0-sy1)) / denom;
+    const c = (sx0*(dx1-dx2) - sx1*(dx0-dx2) + sx2*(dx0-dx1)) / denom;
+    const d = (sx0*(dy1-dy2) - sx1*(dy0-dy2) + sx2*(dy0-dy1)) / denom;
+    const e = (sx0*(sy1*dx2 - sy2*dx1) - sx1*(sy0*dx2 - sy2*dx0) + sx2*(sy0*dx1 - sy1*dx0)) / denom;
+    const f = (sx0*(sy1*dy2 - sy2*dy1) - sx1*(sy0*dy2 - sy2*dy0) + sx2*(sy0*dy1 - sy1*dy0)) / denom;
+    targetCtx.setTransform(a, b, c, d, e, f);
+    targetCtx.drawImage(image, 0, 0);
+    targetCtx.restore();
+  }
+
+  function renderRegionWarpAt(targetCtx, r){
+    const rdx = r.renderDx || 0;
+    const rdy = r.renderDy || 0;
+    const pad = 1.15;
+    const extraX = Math.abs(rdx);
+    const extraY = Math.abs(rdy);
+    const halfW = r.rx*pad + extraX;
+    const halfH = r.ry*pad + extraY;
+    const bx0 = r.cx - halfW, by0 = r.cy - halfH;
+    const bw = halfW*2, bh = halfH*2;
+    const cols = GRID, rows = GRID;
+    const cellW = bw / cols, cellH = bh / rows;
+
+    const srcPts = [], dstPts = [];
+    for(let j=0;j<=rows;j++){
+      const rowSrc = [], rowDst = [];
+      for(let i=0;i<=cols;i++){
+        const sx = bx0 + i*cellW, sy = by0 + j*cellH;
+        const nx = (sx - r.cx) / r.rx, ny = (sy - r.cy) / r.ry;
+        const t = Math.sqrt(nx*nx + ny*ny);
+        const fall = smoothFalloff(Math.min(1, t));
+        rowSrc.push([sx, sy]);
+        rowDst.push([sx + rdx*fall, sy + rdy*fall]);
+      }
+      srcPts.push(rowSrc); dstPts.push(rowDst);
+    }
+
+    targetCtx.save();
+    targetCtx.beginPath();
+    targetCtx.ellipse(
+      r.cx + rdx*0.5, r.cy + rdy*0.5,
+      r.rx*pad + extraX, r.ry*pad + extraY, 0, 0, Math.PI*2
+    );
+    targetCtx.clip();
+
+    for(let j=0;j<rows;j++){
+      for(let i=0;i<cols;i++){
+        const s00=srcPts[j][i], s10=srcPts[j][i+1], s01=srcPts[j+1][i], s11=srcPts[j+1][i+1];
+        const d00=dstPts[j][i], d10=dstPts[j][i+1], d01=dstPts[j+1][i], d11=dstPts[j+1][i+1];
+        drawTexturedTriangleAt(targetCtx, off, s00[0],s00[1], s10[0],s10[1], s11[0],s11[1], d00[0],d00[1], d10[0],d10[1], d11[0],d11[1]);
+        drawTexturedTriangleAt(targetCtx, off, s00[0],s00[1], s11[0],s11[1], s01[0],s01[1], d00[0],d00[1], d11[0],d11[1], d01[0],d01[1]);
+      }
+    }
+    targetCtx.restore();
+    targetCtx.setTransform(1,0,0,1,0,0);
+  }
+
+  function drawRecordFrame(targetCtx, includeOutlines){
+    targetCtx.setTransform(1,0,0,1,0,0);
+    targetCtx.clearRect(0,0,imgW,imgH);
+    targetCtx.drawImage(img, 0, 0, imgW, imgH, 0, 0, imgW, imgH);
+    for(const r of regions) renderRegionWarpAt(targetCtx, r);
+    if(includeOutlines){
+      for(const r of regions){
+        targetCtx.save();
+        targetCtx.strokeStyle = 'rgba(255,255,255,0.35)';
+        targetCtx.lineWidth = Math.max(1, imgW/600);
+        targetCtx.beginPath();
+        targetCtx.ellipse((r.cx+(r.renderDx||0)), (r.cy+(r.renderDy||0)), r.rx, r.ry, 0, 0, Math.PI*2);
+        targetCtx.stroke();
+        targetCtx.restore();
+      }
+    }
+  }
+
+  function getSupportedMimeTypes(){
+    // Ordered by preference; not every browser supports every entry.
+    // MediaRecorder.isTypeSupported() is the authoritative check — we
+    // never assume, we only offer what the browser itself confirms.
+    const candidates = [
+      'video/mp4;codecs=h264',
+      'video/mp4',
+      'video/webm;codecs=vp9',
+      'video/webm;codecs=vp8',
+      'video/webm'
+    ];
+    if(typeof MediaRecorder === 'undefined') return [];
+    return candidates.filter(t => {
+      try { return MediaRecorder.isTypeSupported(t); }
+      catch(e){ return false; }
+    });
+  }
+
+  function populateFormatOptions(){
+    const supported = getSupportedMimeTypes();
+    selFormat.innerHTML = '';
+    if(supported.length === 0){
+      recordingSupported = false;
+      const opt = document.createElement('option');
+      opt.textContent = '此瀏覽器不支援錄影';
+      selFormat.appendChild(opt);
+      btnRecord.disabled = true;
+      recordStatus.textContent = '此裝置/瀏覽器不支援 MediaRecorder，暫時無法錄製影片。';
+      return;
+    }
+    for(const mt of supported){
+      const opt = document.createElement('option');
+      opt.value = mt;
+      const isMp4 = mt.indexOf('video/mp4') === 0;
+      opt.textContent = (isMp4 ? 'MP4' : 'WebM') + '（最長10秒）';
+      selFormat.appendChild(opt);
+    }
+  }
+  populateFormatOptions();
+
+  function extForMime(mimeType){
+    return mimeType.indexOf('video/mp4') === 0 ? 'mp4' : 'webm';
+  }
+
+  function setRecordingUI(recording){
+    isRecording = recording;
+    btnRecord.disabled = recording || !img || !recordingSupported;
+    fileInput.disabled = recording;
+    selFormat.disabled = recording;
+    selDuration.disabled = recording;
+  }
+
+  const recCountdown = document.getElementById('recCountdown');
+  const recBadge = document.getElementById('recBadge');
+  const recBadgeText = document.getElementById('recBadgeText');
+
+  function showCountdownNumber(n){
+    recCountdown.innerHTML = '<div class="num">' + n + '</div>';
+    recCountdown.classList.add('show');
+  }
+  function hideCountdown(){
+    recCountdown.classList.remove('show');
+    recCountdown.innerHTML = '';
+  }
+  function formatRecTime(sec){
+    const s = Math.max(0, Math.ceil(sec));
+    return '00:' + String(s).padStart(2, '0');
+  }
+  function showRecBadge(remainingSec){
+    recBadgeText.textContent = 'REC ' + formatRecTime(remainingSec);
+    recBadge.classList.add('show');
+  }
+  function hideRecBadge(){
+    recBadge.classList.remove('show');
+  }
+
+  let recLoopActive = false;
+  function startRecordLoop(recCtx, includeOutlines){
+    recLoopActive = true;
+    function tick(){
+      if(!recLoopActive) return;
+      drawRecordFrame(recCtx, includeOutlines);
+      requestAnimationFrame(tick);
+    }
+    tick();
+  }
+  function stopRecordLoop(){ recLoopActive = false; }
+
+  btnRecord.addEventListener('click', async ()=>{
+    if(!img || isRecording || !recordingSupported) return;
+    const mimeType = selFormat.value;
+    if(!mimeType) return;
+    const durationMs = parseInt(selDuration.value, 10) * 1000;
+    const includeOutlines = !chkHideOutlineRec.checked;
+
+    setRecordingUI(true);
+    downloadLink.style.display = 'none';
+
+    // 3-second countdown, shown as a big number over the image itself
+    // (matches the "3秒後開始錄製" hint) instead of buried in small text.
+    let countdown = 3;
+    recordStatus.textContent = '即將開始錄製…';
+    showCountdownNumber(countdown);
+    await new Promise(resolve=>{
+      const timer = setInterval(()=>{
+        countdown -= 1;
+        if(countdown > 0){
+          showCountdownNumber(countdown);
+        } else {
+          clearInterval(timer);
+          hideCountdown();
+          resolve();
+        }
+      }, 1000);
+    });
+
+    recordStatus.textContent = '錄製中…';
+
+    // Dedicated native-resolution offscreen canvas — this is what actually
+    // gets recorded, independent of the (possibly much smaller) on-screen
+    // preview canvas. See comment above for why this fixes blurry output.
+    const recCanvas = document.createElement('canvas');
+    recCanvas.width = imgW;
+    recCanvas.height = imgH;
+    const recCtx = recCanvas.getContext('2d');
+
+    // Higher bitrate than MediaRecorder's low default, scaled to resolution,
+    // so the encoder doesn't over-compress and blur fine jelly detail.
+    const targetBps = Math.round(Math.min(20_000_000, Math.max(4_000_000, imgW * imgH * 30 * 0.08)));
+
+    let stream, recorder;
+    try{
+      stream = recCanvas.captureStream(30);
+      try{
+        recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: targetBps });
+      } catch(errBitrate){
+        // Some browsers reject unusual bitrate values — fall back without it.
+        recorder = new MediaRecorder(stream, { mimeType });
+      }
+    } catch(err){
+      recordStatus.textContent = '無法啟動錄影：' + (err && err.message ? err.message : String(err));
+      setRecordingUI(false);
+      return;
+    }
+
+    startRecordLoop(recCtx, includeOutlines);
+
+    const recStartAt = performance.now();
+    showRecBadge(durationMs / 1000);
+    const badgeTimer = setInterval(()=>{
+      const remaining = (durationMs - (performance.now() - recStartAt)) / 1000;
+      if(remaining <= 0){
+        clearInterval(badgeTimer);
+        showRecBadge(0);
+      } else {
+        showRecBadge(remaining);
+      }
+    }, 200);
+
+    const chunks = [];
+    recorder.ondataavailable = (e)=>{
+      if(e.data && e.data.size > 0) chunks.push(e.data);
+    };
+    recorder.onstop = ()=>{
+      stopRecordLoop();
+      clearInterval(badgeTimer);
+      hideRecBadge();
+      stream.getTracks().forEach(t=>t.stop());
+      if(chunks.length === 0){
+        recordStatus.textContent = '錄製失敗，沒有取得影像資料，請再試一次。';
+        setRecordingUI(false);
+        return;
+      }
+      const blob = new Blob(chunks, { type: mimeType });
+      const url = URL.createObjectURL(blob);
+      const ext = extForMime(mimeType);
+      downloadLink.href = url;
+      downloadLink.download = `jelly-recording-${Date.now()}.${ext}`;
+      downloadLink.style.display = 'inline-flex';
+      recordStatus.textContent = '錄製完成，點擊下方按鈕下載。';
+      setRecordingUI(false);
+    };
+    recorder.onerror = (e)=>{
+      stopRecordLoop();
+      clearInterval(badgeTimer);
+      hideRecBadge();
+      stream.getTracks().forEach(t=>t.stop());
+      recordStatus.textContent = '錄影過程發生錯誤。';
+      setRecordingUI(false);
+    };
+
+    recorder.start();
+    setTimeout(()=>{
+      if(recorder.state !== 'inactive') recorder.stop();
+    }, durationMs);
+  });
+
+})();
+</script>
+</body>
+</html>
