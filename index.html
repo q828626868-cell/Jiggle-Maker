@@ -654,20 +654,28 @@
   // with extra weighting on vertical (y) axis per spec, plus a bit of horizontal.
   let lastT = performance.now();
 
+  // Motion response tuning:
+  // The old version deliberately reduced horizontal input to 35%, which made
+  // left/right shaking feel almost dead.  It also used a relatively small
+  // acceleration gain.  Keep X/Y balanced and give the sensor enough force
+  // to be clearly visible at the default sensitivity.
+  const MOTION_GAIN = 72;
+  const MOTION_SMOOTH = 0.22;
+  let motionX = 0;
+  let motionY = 0;
+
   function stepPhysics(now){
     const dt = Math.min(0.05, Math.max(0.001, (now - lastT) / 1000));
     lastT = now;
 
-    // Device motion axes -> screen axes (rough, portrait-oriented mapping):
-    // ax (left-right of device) -> horizontal screen displacement
-    // ay (up-down of device)    -> vertical screen displacement (dominant)
-    // Coefficient raised substantially: typical shake linAcc is only a few
-    // m/s^2, and with low stiffness a much larger force is needed to produce
-    // a visible, jelly-like swing rather than a barely-perceptible nudge.
-    let driveX = (linAcc.x || 0) * params.sensitivity * 26;
-    let driveY = -(linAcc.y || 0) * params.sensitivity * 26;
-    // emphasize vertical per spec: horizontal contributes less
-    driveX *= 0.35;
+    // Smooth sensor noise without making the jelly sluggish.
+    motionX += ((linAcc.x || 0) - motionX) * MOTION_SMOOTH;
+    motionY += ((linAcc.y || 0) - motionY) * MOTION_SMOOTH;
+
+    // Device X/Y -> jelly X/Y.
+    // Both directions now have the same strength.
+    const driveX = motionX * params.sensitivity * MOTION_GAIN;
+    const driveY = -(motionY) * params.sensitivity * MOTION_GAIN;
 
     for(const r of regions){
       const ax = -params.stiffness * r.dx - params.damping * r.vx + driveX;
@@ -676,18 +684,19 @@
       r.vy += ay * dt;
       r.dx += r.vx * dt;
       r.dy += r.vy * dt;
-      // Absolute safety bound on the internal (unclamped) state so sustained
-      // strong shaking can't accumulate energy indefinitely if damping is
-      // set very low — keeps the simulation numerically stable without
-      // affecting normal jelly-like behavior (bound is far above maxDisp).
+
       const hardBound = params.maxDisp * 4;
-      if(Math.abs(r.dx) > hardBound){ r.dx = Math.sign(r.dx) * hardBound; r.vx *= 0.5; }
-      if(Math.abs(r.dy) > hardBound){ r.dy = Math.sign(r.dy) * hardBound; r.vy *= 0.5; }
-      // Soft limit instead of a hard clamp, applied to a separate rendered
-      // value so the spring's internal true displacement/velocity are never
-      // altered — only what gets drawn is compressed as it approaches
-      // maxDisp (tanh), giving a natural deceleration near the limit instead
-      // of a jarring hard stop, while the physics itself stays undamped by it.
+      if(Math.abs(r.dx) > hardBound){
+        r.dx = Math.sign(r.dx) * hardBound;
+        r.vx *= 0.5;
+      }
+      if(Math.abs(r.dy) > hardBound){
+        r.dy = Math.sign(r.dy) * hardBound;
+        r.vy *= 0.5;
+      }
+
+      // Keep the existing soft visual limit so the max-displacement slider
+      // still controls how far the jelly is allowed to appear to move.
       const mag = Math.hypot(r.dx, r.dy);
       if(mag > 0.0001){
         const softMag = params.maxDisp * Math.tanh(mag / params.maxDisp);
