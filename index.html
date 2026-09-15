@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>局部果凍物理模擬</title>
+<title>果凍晃動工具</title>
 <style>
   :root{
     --bg:#111417;
@@ -200,14 +200,54 @@
   }
   #recordStatus{font-size:11px;color:var(--dim);min-height:14px;}
   #downloadLink{justify-content:center;display:none;}
+
+/* ===== UI refresh: visual/text only, no behavior changes ===== */
+:root{
+  --bg:#0c0f12;--panel:#15191e;--panel2:#1b2026;--line:#2a3139;
+  --text:#f1f4f6;--dim:#929ca7;--accent:#66b7ff;--accent2:#ffad66;--danger:#ff6875;
+  --success:#66df8b;
+}
+header{padding:12px 14px;background:rgba(21,25,30,.96);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);}
+header h1{font-size:16px;font-weight:750;letter-spacing:0;}
+header .sub{font-size:11px;margin-top:2px;color:#9da7b1;}
+#stage-wrap{background:
+  radial-gradient(circle at 50% 45%,rgba(102,183,255,.055),transparent 42%),
+  linear-gradient(45deg,#171b20 25%,transparent 25%) -8px 0/16px 16px,
+  linear-gradient(-45deg,#171b20 25%,transparent 25%) -8px 0/16px 16px,
+  linear-gradient(45deg,transparent 75%,#171b20 75%) -8px 0/16px 16px,
+  linear-gradient(-45deg,transparent 75%,#171b20 75%) -8px 0/16px 16px,#121519;}
+#stage-wrap.empty::after{content:"先選一張圖片，再圈選想晃動的部位";font-size:13px;text-align:center;padding:0 24px;}
+#toolbar{padding:10px 10px calc(10px + env(safe-area-inset-bottom));gap:9px;background:rgba(21,25,30,.98);}
+.toolbarGroup{display:flex;gap:7px;flex-wrap:wrap;align-items:center;}
+.toolbarGroup + .toolbarGroup{padding-top:1px;}
+button,label.filebtn{border-radius:11px;border-color:#303740;background:#1c2229;padding:10px 12px;font-size:12px;font-weight:600;box-shadow:0 1px 0 rgba(255,255,255,.025) inset;}
+button:active,label.filebtn:active{transform:translateY(1px);background:#252c34;}
+button.primary,label.filebtn.primary{background:var(--accent);border-color:var(--accent);color:#06121c;}
+button.small{padding:9px 11px;font-size:11.5px;}
+#btnMotion{border-color:#3a5369;color:#b9dcf7;}
+#btnLock{flex:1 1 125px;justify-content:center;border-color:#4b5965;background:#20272f;color:#eaf2f8;font-weight:750;}
+#btnLock.locked{background:var(--success);border-color:var(--success);color:#092414;box-shadow:0 0 0 2px rgba(102,223,139,.13),0 5px 18px rgba(102,223,139,.12);}
+#btnImpulse{flex:1 1 90px;justify-content:center;}
+#btnToggleOutline{flex:1 1 90px;justify-content:center;}
+#btnUndo,#btnClear{flex:1 1 85px;justify-content:center;}
+#panel,#debugPanel,#recordPanel{border-radius:12px;border-color:#2b323a;background:#181d23;}
+details#panel summary,details.subpanel summary{font-size:12px;font-weight:650;color:#d1d7dd;}
+details#panel summary::before{content:"⚙️ ";}#debugPanel summary::before{content:"🛠️ ";}
+#recordPanel{padding:12px;background:linear-gradient(180deg,#1b2026,#181d23);}
+#recordPanel .rTitle{font-size:13px;font-weight:750;}
+#recordPanel .rSub{line-height:1.45;}
+#btnRecord{border-radius:11px;padding:12px;font-size:13px;box-shadow:0 5px 18px rgba(102,183,255,.10);}
+.badge{background:#1b2026;}
+#debugPanel{opacity:.78;}
+
 </style>
 </head>
 <body>
 <div id="app">
   <header>
     <div>
-      <h1>局部果凍物理模擬</h1>
-      <div class="sub">圈選區域 → 搖晃手機或按衝量測試</div>
+      <h1>果凍晃動工具</h1>
+      <div class="sub">圈選部位 → 搖晃手機，或直接點擊讓它晃起來</div>
     </div>
     <span class="badge" id="sensorBadge" style="cursor:pointer;">感應器：未啟動</span>
   </header>
@@ -219,60 +259,60 @@
   </div>
 
   <div id="toolbar">
-    <div class="row between">
-      <label class="filebtn grow" for="fileInput">📷 選擇圖片
+    <div class="toolbarGroup">
+      <label class="filebtn primary grow" for="fileInput">📷 上傳圖片
         <input type="file" id="fileInput" accept="image/*">
       </label>
-      <button id="btnMotion" class="small">啟動感應器</button>
+      <button id="btnMotion" class="small">📱 開啟手機晃動</button>
     </div>
 
-    <div class="row between">
-      <button id="btnUndo" class="small" disabled>↩ 復原選區</button>
-      <button id="btnClear" class="small warn" disabled>🗑 清除全部</button>
-      <button id="btnImpulse" class="small" disabled>💥 模擬衝量</button>
-      <button id="btnLock" class="small" disabled>🔒 鎖定晃動</button>
-      <button id="btnToggleOutline" class="small grow" disabled>🙈 隱藏圈圈</button>
+    <div class="toolbarGroup">
+      <button id="btnUndo" class="small" disabled>↩ 復原</button>
+      <button id="btnClear" class="small warn" disabled>🗑 清除選區</button>
+      <button id="btnImpulse" class="small" disabled>💫 晃動</button>
+      <button id="btnLock" class="small" disabled>👆 點擊晃動</button>
+      <button id="btnToggleOutline" class="small grow" disabled>👁 隱藏選區</button>
     </div>
 
     <details id="panel">
-      <summary>物理參數</summary>
+      <summary>晃動設定</summary>
       <div class="sliders">
         <div class="slider">
           <div class="label"><span>敏感度</span><b id="vSens">1.0</b></div>
           <input type="range" id="sSens" min="0.1" max="4" step="0.05" value="1.0">
         </div>
         <div class="slider">
-          <div class="label"><span>彈力 stiffness</span><b id="vStiff">90</b></div>
+          <div class="label"><span>彈性</span><b id="vStiff">90</b></div>
           <input type="range" id="sStiff" min="4" max="80" step="1" value="18">
         </div>
         <div class="slider">
-          <div class="label"><span>阻尼 damping</span><b id="vDamp">1.2</b></div>
+          <div class="label"><span>回彈阻力</span><b id="vDamp">1.2</b></div>
           <input type="range" id="sDamp" min="0.2" max="8" step="0.1" value="1.2">
         </div>
         <div class="slider">
-          <div class="label"><span>最大位移(px)</span><b id="vMaxDisp">60</b></div>
+          <div class="label"><span>最大晃動幅度</span><b id="vMaxDisp">60</b></div>
           <input type="range" id="sMaxDisp" min="10" max="160" step="1" value="60">
         </div>
       </div>
       <p style="font-size:11px;color:var(--dim);margin:8px 0 0;line-height:1.5;">
-        果凍感訣竅：<b>彈力(stiffness)調低</b>、<b>阻尼(damping)也調低</b> 才會晃很多下才停下來；
+        小技巧：<b>彈力(stiffness)調低</b>、<b>阻尼(damping)也調低</b> 才會晃很多下才停下來；
         彈力高或阻尼高都會讓它「抖一下立刻停」，變成死板的位移而不是搖晃。
       </p>
     </details>
 
     <details class="subpanel" id="debugPanel">
-      <summary>除錯資訊</summary>
+      <summary>進階資訊</summary>
       <div id="debug" style="margin-top:6px;">等待資料…</div>
     </details>
 
     <div id="recordPanel">
       <div>
-        <span class="rTitle">錄製並儲存</span>
-        <div class="rSub">錄製搖晃圖片時的動作（3秒後開始錄製）</div>
+        <span class="rTitle">🎬 錄製結果</span>
+        <div class="rSub">先倒數 3 秒，再開始錄製晃動效果</div>
       </div>
       <button id="btnRecord" disabled>⏺ 開始錄製</button>
       <details class="subpanel" id="recordOptions">
-        <summary>錄製設定（格式・時間・畫面效果）</summary>
+        <summary>錄製設定</summary>
         <div class="rFields" style="margin-top:6px;">
           <div class="rField">
             <div class="flabel">格式</div>
@@ -288,7 +328,7 @@
             </select>
           </div>
         </div>
-        <label class="rCheck" style="margin-top:8px;"><input type="checkbox" id="chkHideOutlineRec" checked> 錄製時隱藏圈選外框（只保留果凍晃動效果）</label>
+        <label class="rCheck" style="margin-top:8px;"><input type="checkbox" id="chkHideOutlineRec" checked> 錄製時隱藏選區外框</label>
       </details>
       <div id="recordStatus"></div>
       <a id="downloadLink" class="filebtn">⬇ 下載影片</a>
@@ -299,7 +339,7 @@
 <div id="motion-gate">
   <p>此裝置（iOS）需要授權才能讀取加速度感應器，才能驅動晃動效果。</p>
   <button class="primary" id="btnGrantMotion">允許動作感應</button>
-  <button class="small" id="btnSkipMotion">略過，只用桌面模擬按鈕</button>
+  <button class="small" id="btnSkipMotion">略過，之後也可以再開啟</button>
 </div>
 
 <script>
@@ -417,7 +457,7 @@
   function updateLockButton(){
     btnLock.disabled = !img;
     btnLock.classList.toggle('locked', lockMode);
-    btnLock.textContent = lockMode ? '🔓 退出鎖定' : '🔒 鎖定晃動';
+    btnLock.textContent = lockMode ? '✋ 編輯選區' : '👆 點擊晃動';
     canvas.style.cursor = lockMode ? 'pointer' : 'crosshair';
   }
 
@@ -645,12 +685,12 @@
             '2. 點「網站權限」或「權限」\n' +
             '3. 找「動作與方向感應器 / Motion sensors」，改為「允許」\n' +
             '4. 回到系統設定 → App → Samsung Internet → 權限 → 確認「實體活動/身體活動」或「感應器」未被關閉\n' +
-            '5. 重新整理此頁面，再按一次「啟動感應器」\n'
+            '5. 重新整理此頁面，再按一次「📱 開啟手機晃動」\n'
           : '1. 網址列左側點「鎖頭」圖示 → 「網站設定」\n' +
             '2. 找「動作感應器 Motion sensors」，改為「允許」\n' +
             '   （若列表中沒有這個選項，代表瀏覽器版本尚未把它當成可調整權限，\n' +
             '    通常表示問題其實是 https 或系統層級權限，請看上方 HTTPS 提示）\n' +
-            '3. 重新整理此頁面，再按一次「啟動感應器」\n') +
+            '3. 重新整理此頁面，再按一次「📱 開啟手機晃動」\n') +
         '\n如果上面設定都是「允許」但依然沒有數據，試著：\n' +
         '• 完全關閉瀏覽器分頁重開（而不是切換分頁）\n' +
         '• 確認手機系統設定裡沒有省電模式限制背景感應器\n\n';
@@ -983,7 +1023,7 @@
   // ---------- Toggle outline visibility ----------
   btnToggleOutline.addEventListener('click', ()=>{
     showOutlines = !showOutlines;
-    btnToggleOutline.textContent = showOutlines ? '🙈 隱藏圈圈' : '👁 顯示圈圈';
+    btnToggleOutline.textContent = showOutlines ? '👁 隱藏選區' : '👁 顯示圈圈';
   });
 
   // ---------- Record & Save ----------
