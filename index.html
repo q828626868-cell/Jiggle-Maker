@@ -119,6 +119,7 @@
   button:active, label.filebtn:active{background:#262c33;}
   button.primary{background:var(--accent);border-color:var(--accent);color:#06121c;font-weight:600;}
   button.warn{border-color:var(--danger);color:var(--danger);}
+  button.locked{background:#5bd97a;border-color:#5bd97a;color:#0d2b12;font-weight:700;}
   button:disabled{opacity:.35;pointer-events:none;}
   button.small{padding:6px 9px;font-size:11.5px;}
   input[type=file]{display:none;}
@@ -229,6 +230,7 @@
       <button id="btnUndo" class="small" disabled>↩ 復原選區</button>
       <button id="btnClear" class="small warn" disabled>🗑 清除全部</button>
       <button id="btnImpulse" class="small" disabled>💥 模擬衝量</button>
+      <button id="btnLock" class="small" disabled>🔒 鎖定晃動</button>
       <button id="btnToggleOutline" class="small grow" disabled>🙈 隱藏圈圈</button>
     </div>
 
@@ -313,6 +315,7 @@
   const btnUndo = document.getElementById('btnUndo');
   const btnClear = document.getElementById('btnClear');
   const btnImpulse = document.getElementById('btnImpulse');
+  const btnLock = document.getElementById('btnLock');
   const btnToggleOutline = document.getElementById('btnToggleOutline');
   const debugEl = document.getElementById('debug');
   const sensorBadge = document.getElementById('sensorBadge');
@@ -409,12 +412,69 @@
   let showOutlines = true;
   let drawingRegion = null; // in-progress rubber band {x0,y0,x1,y1} in image space
   let selectMode = true;
+  let lockMode = false; // locked = tap/click image to poke jelly, no new selection
+
+  function updateLockButton(){
+    btnLock.disabled = !img;
+    btnLock.classList.toggle('locked', lockMode);
+    btnLock.textContent = lockMode ? '🔓 退出鎖定' : '🔒 鎖定晃動';
+    canvas.style.cursor = lockMode ? 'pointer' : 'crosshair';
+  }
+
+  function setLockMode(locked){
+    lockMode = !!locked;
+    // Never leave an in-progress selection hanging when switching modes.
+    dragStart = null;
+    drawingRegion = null;
+    updateLockButton();
+  }
+
+  // A tap/poke in locked mode only affects the selected ellipse under the tap.
+  // The closer the tap is to the centre, the stronger the local kick.
+  function pokeAt(clientX, clientY){
+    if(!img || regions.length === 0) return;
+    const p = canvasPosToImagePos(clientX, clientY);
+    let hit = null;
+    let best = Infinity;
+
+    for(const r of regions){
+      const nx = (p.x - r.cx) / r.rx;
+      const ny = (p.y - r.cy) / r.ry;
+      const d = Math.hypot(nx, ny);
+      if(d <= 1 && d < best){
+        best = d;
+        hit = r;
+      }
+    }
+    if(!hit) return;
+
+    const kick = 150 * params.sensitivity;
+    // Push away from the tap point.  At the centre, use a small random direction
+    // so a centre tap still produces a visible wobble.
+    let nx = (p.x - hit.cx) / hit.rx;
+    let ny = (p.y - hit.cy) / hit.ry;
+    let len = Math.hypot(nx, ny);
+    if(len < 0.08){
+      const a = Math.random() * Math.PI * 2;
+      nx = Math.cos(a);
+      ny = Math.sin(a);
+      len = 1;
+    }
+    nx /= len;
+    ny /= len;
+
+    // Stronger near the centre, softer near the edge.
+    const strength = (1 - Math.min(1, best)) * kick;
+    hit.vx += nx * strength;
+    hit.vy += ny * strength;
+  }
 
   function updateRegionButtons(){
     btnUndo.disabled = regions.length === 0;
     btnClear.disabled = regions.length === 0;
     btnImpulse.disabled = regions.length === 0 || !img;
     btnToggleOutline.disabled = regions.length === 0 || !img;
+    updateLockButton();
   }
 
   function canvasPosToImagePos(clientX, clientY){
@@ -439,6 +499,9 @@
   let dragStart = null;
   function pointerDown(clientX, clientY){
     if(!img) return;
+    if(lockMode){
+      return;
+    }
     dragStart = canvasPosToImagePos(clientX, clientY);
     drawingRegion = {x0:dragStart.x, y0:dragStart.y, x1:dragStart.x, y1:dragStart.y};
   }
@@ -448,7 +511,13 @@
     drawingRegion.x1 = p.x;
     drawingRegion.y1 = p.y;
   }
-  function pointerUp(){
+  function pointerUp(clientX, clientY){
+    if(lockMode){
+      if(clientX != null && clientY != null) pokeAt(clientX, clientY);
+      dragStart = null;
+      drawingRegion = null;
+      return;
+    }
     if(!dragStart || !drawingRegion) { dragStart=null; drawingRegion=null; return; }
     const w = Math.abs(drawingRegion.x1 - drawingRegion.x0);
     const h = Math.abs(drawingRegion.y1 - drawingRegion.y0);
@@ -462,7 +531,7 @@
 
   canvas.addEventListener('mousedown', (e)=>{ pointerDown(e.clientX, e.clientY); });
   window.addEventListener('mousemove', (e)=>{ pointerMove(e.clientX, e.clientY); });
-  window.addEventListener('mouseup', ()=>{ pointerUp(); });
+  window.addEventListener('mouseup', (e)=>{ pointerUp(e.clientX, e.clientY); });
 
   canvas.addEventListener('touchstart', (e)=>{
     if(e.touches.length===1){
@@ -476,8 +545,8 @@
       e.preventDefault();
     }
   }, {passive:false});
-  canvas.addEventListener('touchend', (e)=>{ pointerUp(); }, {passive:false});
-  canvas.addEventListener('touchcancel', (e)=>{ pointerUp(); }, {passive:false});
+  canvas.addEventListener('touchend', (e)=>{ const t=e.changedTouches && e.changedTouches[0]; pointerUp(t ? t.clientX : null, t ? t.clientY : null); e.preventDefault(); }, {passive:false});
+  canvas.addEventListener('touchcancel', (e)=>{ dragStart=null; drawingRegion=null; }, {passive:false});
 
   btnUndo.addEventListener('click', ()=>{
     regions.pop();
@@ -486,6 +555,11 @@
   btnClear.addEventListener('click', ()=>{
     regions.length = 0;
     updateRegionButtons();
+  });
+
+  btnLock.addEventListener('click', ()=>{
+    if(!img) return;
+    setLockMode(!lockMode);
   });
 
   // ---------- Motion input: gravity-removed acceleration ----------
@@ -896,6 +970,7 @@
   }
   requestAnimationFrame(loop);
   requestAnimationFrame(drawFrame);
+  updateLockButton();
 
   function updateDebug(){
     const r0 = regions[0];
