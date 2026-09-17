@@ -228,6 +228,7 @@ button.small{padding:9px 11px;font-size:11.5px;}
 #btnLock{flex:1 1 125px;justify-content:center;border-color:#4b5965;background:#20272f;color:#eaf2f8;font-weight:750;}
 #btnLock.locked{background:var(--success);border-color:var(--success);color:#092414;box-shadow:0 0 0 2px rgba(102,223,139,.13),0 5px 18px rgba(102,223,139,.12);}
 #btnImpulse{flex:1 1 90px;justify-content:center;}
+#btnShape{flex:1 1 90px;justify-content:center;border-color:#4b5965;}
 #btnToggleOutline{flex:1 1 90px;justify-content:center;}
 #btnUndo,#btnClear{flex:1 1 85px;justify-content:center;}
 #panel,#debugPanel,#recordPanel{border-radius:12px;border-color:#2b323a;background:#181d23;}
@@ -270,6 +271,9 @@ details#panel summary::before{content:"⚙️ ";}#debugPanel summary::before{con
       <button id="btnUndo" class="small" disabled>↩ 復原</button>
       <button id="btnClear" class="small warn" disabled>🗑 清除選區</button>
       <button id="btnImpulse" class="small" disabled>💫 晃動</button>
+      <button id="btnShape" class="small" disabled>◯ 圓形</button>
+      <button id="btnFinishDraw" class="small primary" style="display:none;">✔ 完成手繪</button>
+      <button id="btnCancelDraw" class="small warn" style="display:none;">✕ 取消</button>
       <button id="btnLock" class="small" disabled>👆 點擊晃動</button>
       <button id="btnToggleOutline" class="small grow" disabled>👁 隱藏選區</button>
     </div>
@@ -355,6 +359,9 @@ details#panel summary::before{content:"⚙️ ";}#debugPanel summary::before{con
   const btnUndo = document.getElementById('btnUndo');
   const btnClear = document.getElementById('btnClear');
   const btnImpulse = document.getElementById('btnImpulse');
+  const btnShape = document.getElementById('btnShape');
+  const btnFinishDraw = document.getElementById('btnFinishDraw');
+  const btnCancelDraw = document.getElementById('btnCancelDraw');
   const btnLock = document.getElementById('btnLock');
   const btnToggleOutline = document.getElementById('btnToggleOutline');
   const debugEl = document.getElementById('debug');
@@ -446,16 +453,35 @@ details#panel summary::before{content:"⚙️ ";}#debugPanel summary::before{con
     offCtx.drawImage(img,0,0,imgW,imgH);
   }
 
-  // ---------- Regions (ellipses) ----------
-  // Each region: cx,cy,rx,ry in IMAGE pixel space; plus its own spring-mass state.
+  // ---------- Regions (ellipse / freeform polygon) ----------
+  // Each region stores its bounding box plus its own spring-mass state.
+  // shape: "ellipse" or "freeform"
+  // freeform regions additionally store `points`: an array of {x,y} in
+  // image space, tracing the user-tapped polygon outline.
   let regions = [];
   let showOutlines = true;
-  let drawingRegion = null; // in-progress rubber band {x0,y0,x1,y1} in image space
+  let drawingRegion = null;
   let selectMode = true;
-  let lockMode = false; // locked = tap/click image to poke jelly, no new selection
+  let lockMode = false;
+  let selectionShape = 'ellipse'; // 'ellipse' | 'freeform'
+
+  // Freeform (tap-to-place-points) drawing state.
+  let freeformPoints = null; // array of {x,y} in image space, while actively drawing
+  const FREEFORM_CLOSE_DIST = 18; // image-space px: tapping within this of the
+                                   // start point closes the polygon early
+
+  function isDrawingFreeform(){ return freeformPoints !== null; }
+
+  function updateShapeButton(){
+    btnShape.disabled = !img || isDrawingFreeform();
+    btnShape.textContent = selectionShape === 'ellipse' ? '◯ 圓形' : '✏️ 手繪';
+    btnShape.title = selectionShape === 'ellipse'
+      ? '目前是圓形選區，點擊切換成手繪任意範圍'
+      : '目前是手繪選區，點擊切換回圓形';
+  }
 
   function updateLockButton(){
-    btnLock.disabled = !img;
+    btnLock.disabled = !img || isDrawingFreeform();
     btnLock.classList.toggle('locked', lockMode);
     btnLock.textContent = lockMode ? '✋ 編輯選區' : '👆 點擊晃動';
     canvas.style.cursor = lockMode ? 'pointer' : 'crosshair';
@@ -463,14 +489,141 @@ details#panel summary::before{content:"⚙️ ";}#debugPanel summary::before{con
 
   function setLockMode(locked){
     lockMode = !!locked;
-    // Never leave an in-progress selection hanging when switching modes.
     dragStart = null;
     drawingRegion = null;
+    cancelFreeformDraw();
     updateLockButton();
   }
 
-  // A tap/poke in locked mode only affects the selected ellipse under the tap.
-  // The closer the tap is to the centre, the stronger the local kick.
+  function startFreeformDraw(){
+    freeformPoints = [];
+    btnFinishDraw.style.display = 'inline-flex';
+    btnCancelDraw.style.display = 'inline-flex';
+    updateShapeButton();
+    updateLockButton();
+  }
+
+  function cancelFreeformDraw(){
+    if(!isDrawingFreeform()) return;
+    freeformPoints = null;
+    btnFinishDraw.style.display = 'none';
+    btnCancelDraw.style.display = 'none';
+    updateShapeButton();
+    updateLockButton();
+  }
+
+  function finishFreeformDraw(){
+    if(!isDrawingFreeform()) return;
+    if(freeformPoints.length >= 3){
+      regions.push(makeFreeformRegion(freeformPoints));
+      updateRegionButtons();
+    }
+    freeformPoints = null;
+    btnFinishDraw.style.display = 'none';
+    btnCancelDraw.style.display = 'none';
+    updateShapeButton();
+    updateLockButton();
+  }
+
+  function polygonCentroid(points){
+    // Signed-area centroid; falls back to a plain average for degenerate
+    // (near-zero-area, e.g. near-collinear) polygons.
+    let a=0, cx=0, cy=0;
+    for(let i=0;i<points.length;i++){
+      const p0=points[i], p1=points[(i+1)%points.length];
+      const cross = p0.x*p1.y - p1.x*p0.y;
+      a += cross;
+      cx += (p0.x+p1.x)*cross;
+      cy += (p0.y+p1.y)*cross;
+    }
+    a *= 0.5;
+    if(Math.abs(a) < 1e-6){
+      let sx=0, sy=0;
+      for(const p of points){ sx+=p.x; sy+=p.y; }
+      return { x: sx/points.length, y: sy/points.length };
+    }
+    return { x: cx/(6*a), y: cy/(6*a) };
+  }
+
+  function makeFreeformRegion(rawPoints){
+    // Store points relative to the centroid so cx/cy behaves like the
+    // ellipse case (a single "position" the spring simulation can move),
+    // and rx/ry are the polygon's own bounding half-extents around that
+    // centroid — used for the padded-bounds / overlap-grouping math.
+    const centroid = polygonCentroid(rawPoints);
+    const rel = rawPoints.map(p => ({ x: p.x - centroid.x, y: p.y - centroid.y }));
+    let maxX=0, maxY=0, maxR=0;
+    for(const p of rel){
+      maxX = Math.max(maxX, Math.abs(p.x));
+      maxY = Math.max(maxY, Math.abs(p.y));
+      maxR = Math.max(maxR, Math.hypot(p.x, p.y));
+    }
+    return {
+      cx: centroid.x, cy: centroid.y,
+      rx: Math.max(8, maxX), ry: Math.max(8, maxY),
+      maxRadius: Math.max(8, maxR),
+      shape: 'freeform',
+      relPoints: rel,
+      dx:0, dy:0, vx:0, vy:0
+    };
+  }
+
+  function makeRegion(x0,y0,x1,y1){
+    const cx = (x0+x1)/2, cy=(y0+y1)/2;
+    const rx = Math.max(8, Math.abs(x1-x0)/2);
+    const ry = Math.max(8, Math.abs(y1-y0)/2);
+    return {
+      cx, cy, rx, ry,
+      shape: 'ellipse',
+      dx:0, dy:0, vx:0, vy:0
+    };
+  }
+
+  // Trace a freeform region's polygon outline (points stored relative to
+  // its centroid in `relPoints`, offset back by the region's current cx/cy
+  // so the outline moves along with the spring simulation).
+  function traceFreeformPath(path, r, scale=1, offsetX=0, offsetY=0){
+    const pts = r.relPoints;
+    if(!pts || pts.length === 0) return;
+    const cx = r.cx*scale + offsetX, cy = r.cy*scale + offsetY;
+    path.moveTo(cx + pts[0].x*scale, cy + pts[0].y*scale);
+    for(let i=1;i<pts.length;i++){
+      path.lineTo(cx + pts[i].x*scale, cy + pts[i].y*scale);
+    }
+    path.closePath();
+  }
+
+  function traceRegionPath(path, r, scale=1, offsetX=0, offsetY=0){
+    if(r.shape === 'freeform'){
+      traceFreeformPath(path, r, scale, offsetX, offsetY);
+      return;
+    }
+    path.ellipse(
+      r.cx*scale + offsetX, r.cy*scale + offsetY,
+      r.rx*scale, r.ry*scale, 0, 0, Math.PI*2
+    );
+  }
+
+  function regionContainsPoint(r, p){
+    if(r.shape === 'ellipse'){
+      const nx = (p.x - r.cx) / r.rx;
+      const ny = (p.y - r.cy) / r.ry;
+      return Math.hypot(nx, ny) <= 1;
+    }
+
+    const path = new Path2D();
+    traceRegionPath(path, r, drawScale * dpr);
+    ctx.save();
+    ctx.setTransform(1,0,0,1,0,0);
+    const hit = ctx.isPointInPath(
+      path,
+      p.x * drawScale * dpr,
+      p.y * drawScale * dpr
+    );
+    ctx.restore();
+    return hit;
+  }
+
   function pokeAt(clientX, clientY){
     if(!img || regions.length === 0) return;
     const p = canvasPosToImagePos(clientX, clientY);
@@ -478,10 +631,11 @@ details#panel summary::before{content:"⚙️ ";}#debugPanel summary::before{con
     let best = Infinity;
 
     for(const r of regions){
+      if(!regionContainsPoint(r, p)) continue;
       const nx = (p.x - r.cx) / r.rx;
       const ny = (p.y - r.cy) / r.ry;
       const d = Math.hypot(nx, ny);
-      if(d <= 1 && d < best){
+      if(d < best){
         best = d;
         hit = r;
       }
@@ -489,8 +643,6 @@ details#panel summary::before{content:"⚙️ ";}#debugPanel summary::before{con
     if(!hit) return;
 
     const kick = 150 * params.sensitivity;
-    // Push away from the tap point.  At the centre, use a small random direction
-    // so a centre tap still produces a visible wobble.
     let nx = (p.x - hit.cx) / hit.rx;
     let ny = (p.y - hit.cy) / hit.ry;
     let len = Math.hypot(nx, ny);
@@ -503,7 +655,6 @@ details#panel summary::before{content:"⚙️ ";}#debugPanel summary::before{con
     nx /= len;
     ny /= len;
 
-    // Stronger near the centre, softer near the edge.
     const strength = (1 - Math.min(1, best)) * kick;
     hit.vx += nx * strength;
     hit.vy += ny * strength;
@@ -514,6 +665,7 @@ details#panel summary::before{content:"⚙️ ";}#debugPanel summary::before{con
     btnClear.disabled = regions.length === 0;
     btnImpulse.disabled = regions.length === 0 || !img;
     btnToggleOutline.disabled = regions.length === 0 || !img;
+    updateShapeButton();
     updateLockButton();
   }
 
@@ -524,49 +676,84 @@ details#panel summary::before{content:"⚙️ ";}#debugPanel summary::before{con
     return {x, y};
   }
 
-  function makeRegion(x0,y0,x1,y1){
-    const cx = (x0+x1)/2, cy=(y0+y1)/2;
-    const rx = Math.max(8, Math.abs(x1-x0)/2);
-    const ry = Math.max(8, Math.abs(y1-y0)/2);
-    return {
-      cx, cy, rx, ry,
-      // spring-mass state: displacement (dx,dy) and velocity (vx,vy)
-      dx:0, dy:0, vx:0, vy:0
+  // ---------- Pointer interaction ----------
+  let dragStart = null;
+  let downPos = null; // raw client coords at pointerdown, used to detect a tap vs a drag
+
+  function addFreeformPoint(clientX, clientY){
+    const p = canvasPosToImagePos(clientX, clientY);
+    // Tapping near the first point closes the polygon (needs >=3 points already).
+    if(freeformPoints.length >= 3){
+      const first = freeformPoints[0];
+      if(Math.hypot(p.x-first.x, p.y-first.y) <= FREEFORM_CLOSE_DIST){
+        finishFreeformDraw();
+        return;
+      }
+    }
+    freeformPoints.push(p);
+  }
+
+  function pointerDown(clientX, clientY){
+    if(!img) return;
+    if(lockMode) return;
+    downPos = {x:clientX, y:clientY};
+    if(isDrawingFreeform()) return; // freeform points are placed on tap (pointerUp), not drag
+    dragStart = canvasPosToImagePos(clientX, clientY);
+    drawingRegion = {
+      x0:dragStart.x, y0:dragStart.y,
+      x1:dragStart.x, y1:dragStart.y
     };
   }
 
-  // ---------- Pointer interaction for drawing ellipses ----------
-  let dragStart = null;
-  function pointerDown(clientX, clientY){
-    if(!img) return;
-    if(lockMode){
-      return;
-    }
-    dragStart = canvasPosToImagePos(clientX, clientY);
-    drawingRegion = {x0:dragStart.x, y0:dragStart.y, x1:dragStart.x, y1:dragStart.y};
-  }
   function pointerMove(clientX, clientY){
+    if(isDrawingFreeform()) return;
     if(!dragStart) return;
     const p = canvasPosToImagePos(clientX, clientY);
     drawingRegion.x1 = p.x;
     drawingRegion.y1 = p.y;
   }
+
+  const TAP_MAX_MOVE = 10; // px in screen space: beyond this it's a drag/scroll, not a tap
+
   function pointerUp(clientX, clientY){
     if(lockMode){
       if(clientX != null && clientY != null) pokeAt(clientX, clientY);
       dragStart = null;
       drawingRegion = null;
+      downPos = null;
       return;
     }
-    if(!dragStart || !drawingRegion) { dragStart=null; drawingRegion=null; return; }
+
+    if(isDrawingFreeform()){
+      if(clientX != null && clientY != null && downPos){
+        const moved = Math.hypot(clientX-downPos.x, clientY-downPos.y);
+        if(moved <= TAP_MAX_MOVE) addFreeformPoint(clientX, clientY);
+      }
+      dragStart = null;
+      drawingRegion = null;
+      downPos = null;
+      return;
+    }
+
+    if(!dragStart || !drawingRegion){
+      dragStart=null;
+      drawingRegion=null;
+      downPos = null;
+      return;
+    }
+
     const w = Math.abs(drawingRegion.x1 - drawingRegion.x0);
     const h = Math.abs(drawingRegion.y1 - drawingRegion.y0);
     if(w > 6 && h > 6){
-      regions.push(makeRegion(drawingRegion.x0, drawingRegion.y0, drawingRegion.x1, drawingRegion.y1));
+      regions.push(makeRegion(
+        drawingRegion.x0, drawingRegion.y0,
+        drawingRegion.x1, drawingRegion.y1
+      ));
       updateRegionButtons();
     }
     dragStart = null;
     drawingRegion = null;
+    downPos = null;
   }
 
   canvas.addEventListener('mousedown', (e)=>{ pointerDown(e.clientX, e.clientY); });
@@ -585,16 +772,47 @@ details#panel summary::before{content:"⚙️ ";}#debugPanel summary::before{con
       e.preventDefault();
     }
   }, {passive:false});
-  canvas.addEventListener('touchend', (e)=>{ const t=e.changedTouches && e.changedTouches[0]; pointerUp(t ? t.clientX : null, t ? t.clientY : null); e.preventDefault(); }, {passive:false});
-  canvas.addEventListener('touchcancel', (e)=>{ dragStart=null; drawingRegion=null; }, {passive:false});
+  canvas.addEventListener('touchend', (e)=>{
+    const t=e.changedTouches && e.changedTouches[0];
+    pointerUp(t ? t.clientX : null, t ? t.clientY : null);
+    e.preventDefault();
+  }, {passive:false});
+  canvas.addEventListener('touchcancel', ()=>{
+    dragStart=null;
+    drawingRegion=null;
+    downPos=null;
+  }, {passive:false});
 
   btnUndo.addEventListener('click', ()=>{
+    if(isDrawingFreeform() && freeformPoints.length>0){
+      freeformPoints.pop();
+      return;
+    }
     regions.pop();
     updateRegionButtons();
   });
+
   btnClear.addEventListener('click', ()=>{
     regions.length = 0;
+    cancelFreeformDraw();
     updateRegionButtons();
+  });
+
+  btnShape.addEventListener('click', ()=>{
+    if(!img) return;
+    if(isDrawingFreeform()) return;
+    selectionShape = selectionShape === 'ellipse' ? 'freeform' : 'ellipse';
+    if(selectionShape === 'freeform') startFreeformDraw();
+    // Existing regions intentionally keep their original shape.
+    updateShapeButton();
+  });
+
+  btnFinishDraw.addEventListener('click', ()=>{
+    finishFreeformDraw();
+  });
+
+  btnCancelDraw.addEventListener('click', ()=>{
+    cancelFreeformDraw();
   });
 
   btnLock.addEventListener('click', ()=>{
@@ -837,7 +1055,119 @@ details#panel summary::before{content:"⚙️ ";}#debugPanel summary::before{con
     // t: 0 at center, 1 at edge. Returns 1 at center -> 0 at edge.
     const c = Math.min(1, Math.max(0, t));
     const s = 1 - c;
-    return s*s*(3 - 2*s) === s*s*(3-2*s) ? (s*s*(3-2*s)) : s; // smoothstep(s)
+    return s*s*(3 - 2*s);
+  }
+
+  // The ellipse uses a radial falloff: the center follows the spring
+  // strongly, and the edge fades to zero. A freeform polygon can't use the
+  // ellipse distance directly since its shape is arbitrary. Instead we build
+  // a radial boundary table from the polygon's own vertices (sampled by
+  // angle around the centroid) and apply the same smooth center->edge
+  // falloff against THAT boundary. This keeps the picture attached to the
+  // hand-drawn outline instead of making it look like a separate moving
+  // layer, and — just like the old drop shape — guarantees the true polygon
+  // edge always has zero displacement, so it can never look visually chopped
+  // during movement.
+  function getFreeformRadialTable(r){
+    const key = r.relPoints; // identity is stable for a given region's lifetime
+    if(r._ffRadial && r._ffRadialKey === key) return r._ffRadial;
+    const pts = r.relPoints;
+    const bins = 180;
+    const table = new Float32Array(bins);
+    // Sample not just the vertices but also along each edge, so long edges
+    // between two far-apart vertices still contribute intermediate angles
+    // instead of leaving a gap that the fallback pass has to guess at.
+    const samplesPerEdge = 8;
+    for(let i=0;i<pts.length;i++){
+      const p0 = pts[i], p1 = pts[(i+1)%pts.length];
+      for(let s=0;s<samplesPerEdge;s++){
+        const t = s/samplesPerEdge;
+        const x = p0.x + (p1.x-p0.x)*t;
+        const y = p0.y + (p1.y-p0.y)*t;
+        const radius = Math.hypot(x,y);
+        if(radius < 0.001) continue;
+        let a = Math.atan2(y,x);
+        if(a < 0) a += Math.PI*2;
+        const index = Math.min(bins-1, Math.floor(a/(Math.PI*2)*bins));
+        table[index] = Math.max(table[index], radius);
+      }
+    }
+    // Fill any bins with no samples (very acute vertex spacing) from the
+    // nearest filled neighbor.
+    for(let i=0;i<bins;i++){
+      if(table[i] > 0) continue;
+      let best=0;
+      for(let d=1;d<bins;d++){
+        const l=table[(i-d+bins)%bins], rr=table[(i+d)%bins];
+        if(l>0){best=l;break;}
+        if(rr>0){best=rr;break;}
+      }
+      table[i]=best;
+    }
+    r._ffRadial = table;
+    r._ffRadialKey = key;
+    return table;
+  }
+
+  function getWarpFalloff(r, x, y){
+    if(r.shape !== 'freeform'){
+      const nx = (x-r.cx)/r.rx;
+      const ny = (y-r.cy)/r.ry;
+      return smoothFalloff(Math.min(1, Math.hypot(nx,ny)));
+    }
+
+    const dx=x-r.cx, dy=y-r.cy;
+    const dist=Math.hypot(dx,dy);
+    if(dist < 0.001) return 1;
+
+    const table=getFreeformRadialTable(r);
+    let angle=Math.atan2(dy,dx);
+    if(angle<0) angle+=Math.PI*2;
+    const pos=angle/(Math.PI*2)*table.length;
+    const i0=Math.floor(pos)%table.length;
+    const i1=(i0+1)%table.length;
+    const t=pos-Math.floor(pos);
+    const boundary=table[i0]*(1-t)+table[i1]*t;
+    if(boundary<=0) return 0;
+
+    return smoothFalloff(Math.min(1,dist/boundary));
+  }
+
+  // ---------- Overlap grouping ----------
+  // Two regions are grouped together if their padded bounding boxes
+  // intersect. Regions in the same group are warped as ONE shared mesh
+  // (see renderRegionGroup) instead of being drawn one after another, which
+  // is what used to cause tearing/freezing where selections overlapped:
+  // the later region's clip simply overwrote the earlier region's already-
+  // warped pixels with a fresh, differently-displaced copy of the source.
+  function getPaddedBounds(r){
+    const rdx = r.renderDx || 0, rdy = r.renderDy || 0;
+    const pad = 1.15;
+    const extraX = Math.abs(rdx), extraY = Math.abs(rdy);
+    const halfW = r.rx*pad + extraX, halfH = r.ry*pad + extraY;
+    return { x0: r.cx-halfW, y0: r.cy-halfH, x1: r.cx+halfW, y1: r.cy+halfH };
+  }
+  function boundsIntersect(a, b){
+    return a.x0 < b.x1 && a.x1 > b.x0 && a.y0 < b.y1 && a.y1 > b.y0;
+  }
+  function groupOverlappingRegions(list){
+    const n = list.length;
+    const bounds = list.map(getPaddedBounds);
+    const parent = list.map((_,i)=>i);
+    function find(i){ while(parent[i]!==i){ parent[i]=parent[parent[i]]; i=parent[i]; } return i; }
+    function union(i,j){ const a=find(i), b=find(j); if(a!==b) parent[a]=b; }
+    for(let i=0;i<n;i++){
+      for(let j=i+1;j<n;j++){
+        if(boundsIntersect(bounds[i], bounds[j])) union(i,j);
+      }
+    }
+    const groups = new Map();
+    for(let i=0;i<n;i++){
+      const root = find(i);
+      if(!groups.has(root)) groups.set(root, []);
+      groups.get(root).push(list[i]);
+    }
+    return Array.from(groups.values());
   }
 
   function drawFrame(){
@@ -846,37 +1176,71 @@ details#panel summary::before{content:"⚙️ ";}#debugPanel summary::before{con
     ctx.clearRect(0,0,canvasCssW,canvasCssH);
     ctx.drawImage(img, 0, 0, imgW, imgH, 0, 0, canvasCssW, canvasCssH);
 
-    for(const r of regions){
-      renderRegionWarp(r);
+    for(const group of groupOverlappingRegions(regions)){
+      if(group.length === 1) renderRegionWarp(group[0]);
+      else renderRegionGroup(group, ctx, drawScale, dpr, true);
     }
 
-    // rubber-band while drawing
+    // Rubber-band preview while dragging out an ellipse.
     if(drawingRegion){
-      const x0 = Math.min(drawingRegion.x0, drawingRegion.x1) * drawScale;
-      const y0 = Math.min(drawingRegion.y0, drawingRegion.y1) * drawScale;
-      const w = Math.abs(drawingRegion.x1 - drawingRegion.x0) * drawScale;
-      const h = Math.abs(drawingRegion.y1 - drawingRegion.y0) * drawScale;
+      const preview = makeRegion(
+        drawingRegion.x0, drawingRegion.y0,
+        drawingRegion.x1, drawingRegion.y1
+      );
       ctx.save();
       ctx.strokeStyle = 'rgba(79,176,255,0.9)';
       ctx.lineWidth = 1.5;
       ctx.setLineDash([5,4]);
-      ctx.strokeRect(x0,y0,w,h);
+      const path = new Path2D();
+      traceRegionPath(path, preview, drawScale);
+      ctx.stroke(path);
       ctx.restore();
     }
 
-    // existing region outlines (subtle) — user can hide these via the
-    // "隱藏圈圈" toggle so only the jelly deformation itself is visible.
+    // Freeform tap-to-place-points preview: placed points, connecting lines,
+    // and a highlight ring around the start point once there are enough
+    // points to close the polygon by tapping back near it.
+    if(isDrawingFreeform() && freeformPoints.length > 0){
+      ctx.save();
+      ctx.strokeStyle = 'rgba(79,176,255,0.9)';
+      ctx.fillStyle = 'rgba(79,176,255,0.9)';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([5,4]);
+      ctx.beginPath();
+      ctx.moveTo(freeformPoints[0].x*drawScale, freeformPoints[0].y*drawScale);
+      for(let i=1;i<freeformPoints.length;i++){
+        ctx.lineTo(freeformPoints[i].x*drawScale, freeformPoints[i].y*drawScale);
+      }
+      ctx.stroke();
+      ctx.setLineDash([]);
+      for(const p of freeformPoints){
+        ctx.beginPath();
+        ctx.arc(p.x*drawScale, p.y*drawScale, 4, 0, Math.PI*2);
+        ctx.fill();
+      }
+      if(freeformPoints.length >= 3){
+        const first = freeformPoints[0];
+        ctx.strokeStyle = 'rgba(102,223,139,0.95)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(first.x*drawScale, first.y*drawScale, FREEFORM_CLOSE_DIST*drawScale, 0, Math.PI*2);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
     if(showOutlines){
       for(const r of regions){
         ctx.save();
         ctx.strokeStyle = 'rgba(255,255,255,0.35)';
         ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.ellipse(
-          (r.cx + (r.renderDx||0)) * drawScale, (r.cy + (r.renderDy||0)) * drawScale,
-          r.rx * drawScale, r.ry * drawScale, 0, 0, Math.PI*2
+        const path = new Path2D();
+        traceRegionPath(
+          path, r, drawScale,
+          (r.renderDx||0) * drawScale,
+          (r.renderDy||0) * drawScale
         );
-        ctx.stroke();
+        ctx.stroke(path);
         ctx.restore();
       }
     }
@@ -953,10 +1317,7 @@ details#panel summary::before{content:"⚙️ ";}#debugPanel summary::before{con
       for(let i=0;i<=cols;i++){
         const sx = bx0 + i*cellW;
         const sy = by0 + j*cellH;
-        const nx = (sx - r.cx) / r.rx;
-        const ny = (sy - r.cy) / r.ry;
-        const t = Math.sqrt(nx*nx + ny*ny);
-        const fall = smoothFalloff(Math.min(1, t));
+        const fall = getWarpFalloff(r, sx, sy);
         const dxp = sx + rdx * fall;
         const dyp = sy + rdy * fall;
         rowSrc.push([sx, sy]);
@@ -967,15 +1328,33 @@ details#panel summary::before{content:"⚙️ ";}#debugPanel summary::before{con
     }
 
     ctx.save();
-    // Clip the whole region to the displaced ellipse boundary once, so any
-    // sub-pixel triangle overdraw at the outer rim still stays within a
-    // clean silhouette rather than smearing past it.
-    ctx.beginPath();
-    ctx.ellipse(
-      (r.cx + rdx*0.5)*drawScale, (r.cy + rdy*0.5)*drawScale,
-      (r.rx*pad + extraX)*drawScale, (r.ry*pad + extraY)*drawScale, 0, 0, Math.PI*2
-    );
-    ctx.clip();
+    // IMPORTANT: the clip must follow the SAME jelly envelope as the ellipse.
+    // If the drop is clipped by a rigidly translated path, the picture stays
+    // near its old position while the silhouette moves as a separate layer.
+    // That is exactly the bug we do NOT want.
+    //
+    // The ellipse renderer uses a half-displacement centre plus a slightly
+    // expanded envelope. We use the same rule for the drop, so the image and
+    // its visible boundary travel together.
+    if(r.shape === 'freeform'){
+      // Clip to the padded bounding box that the warp mesh itself was built
+      // from (bx0/by0/bw/bh above), not a scaled-up teardrop outline. Beyond
+      // the drop's true edge the falloff is already 0 (dst pixel === src
+      // pixel), so a rectangle this size never visibly differs from the
+      // untouched background — but unlike a scaled teardrop path, it can
+      // never accidentally slice into the still-deforming interior when the
+      // displacement is large.
+      ctx.beginPath();
+      ctx.rect(bx0*drawScale, by0*drawScale, bw*drawScale, bh*drawScale);
+      ctx.clip();
+    }else{
+      ctx.beginPath();
+      ctx.ellipse(
+        (r.cx + rdx*0.5)*drawScale, (r.cy + rdy*0.5)*drawScale,
+        (r.rx*pad + extraX)*drawScale, (r.ry*pad + extraY)*drawScale, 0, 0, Math.PI*2
+      );
+      ctx.clip();
+    }
 
     for(let j=0;j<rows;j++){
       for(let i=0;i<cols;i++){
@@ -1002,6 +1381,105 @@ details#panel summary::before{content:"⚙️ ";}#debugPanel summary::before{con
     ctx.setTransform(dpr,0,0,dpr,0,0);
   }
 
+  // Blend multiple overlapping regions' displacement fields into ONE mesh.
+  // At any point, each region contributes (renderDx*falloff, renderDy*falloff)
+  // and the contributions are combined as a falloff-weighted average (not a
+  // sum), so:
+  //  - far from every region in the group, falloff≈0 everywhere -> weight
+  //    sum≈0 -> displacement≈0 (pixel stays put, same as before)
+  //  - inside only one region's influence, the weighted average reduces to
+  //    exactly that region's own displacement*falloff (identical to the
+  //    single-region path)
+  //  - in an overlap, both pulls are blended smoothly instead of one
+  //    replacing the other, so there is no seam and no "frozen" patch
+  function blendedDisplacement(group, x, y){
+    let wx = 0, wy = 0, wsum = 0;
+    for(const r of group){
+      const f = getWarpFalloff(r, x, y);
+      if(f <= 0) continue;
+      const rdx = r.renderDx || 0, rdy = r.renderDy || 0;
+      wx += rdx * f * f;
+      wy += rdy * f * f;
+      wsum += f;
+    }
+    if(wsum <= 0) return {dx:0, dy:0, maxFall:0};
+    return { dx: wx/wsum, dy: wy/wsum, maxFall: wsum };
+  }
+
+  function renderRegionGroup(group, targetCtx, scale, dprScale, isLive){
+    let bx0=Infinity, by0=Infinity, bx1=-Infinity, by1=-Infinity;
+    for(const r of group){
+      const b = getPaddedBounds(r);
+      bx0 = Math.min(bx0, b.x0); by0 = Math.min(by0, b.y0);
+      bx1 = Math.max(bx1, b.x1); by1 = Math.max(by1, b.y1);
+    }
+    const bw = bx1-bx0, bh = by1-by0;
+    if(bw <= 0 || bh <= 0) return;
+
+    // Scale mesh resolution with how many regions share this patch so
+    // overlapping clusters stay smooth without paying full grid cost when
+    // it's just one region (handled separately) or two small ones.
+    const cols = GRID * Math.min(3, group.length);
+    const rows = GRID * Math.min(3, group.length);
+    const cellW = bw/cols, cellH = bh/rows;
+
+    const srcPts = [], dstPts = [], fallAt = [];
+    for(let j=0;j<=rows;j++){
+      const rowSrc=[], rowDst=[], rowFall=[];
+      for(let i=0;i<=cols;i++){
+        const sx = bx0 + i*cellW, sy = by0 + j*cellH;
+        const {dx,dy,maxFall} = blendedDisplacement(group, sx, sy);
+        rowSrc.push([sx, sy]);
+        rowDst.push([(sx+dx)*scale, (sy+dy)*scale]);
+        rowFall.push(maxFall);
+      }
+      srcPts.push(rowSrc); dstPts.push(rowDst); fallAt.push(rowFall);
+    }
+
+    targetCtx.save();
+    // Clip to the union of the group's own shapes (not the rectangular
+    // bounds) so untouched background outside every region's silhouette
+    // stays untouched, exactly like the single-region ellipse/drop clip.
+    const clipPath = new Path2D();
+    for(const r of group){
+      const rdx=r.renderDx||0, rdy=r.renderDy||0;
+      const pad=1.15;
+      const extraX=Math.abs(rdx), extraY=Math.abs(rdy);
+      if(r.shape==='freeform'){
+        clipPath.rect(
+          (r.cx-(r.rx*pad+extraX))*scale, (r.cy-(r.ry*pad+extraY))*scale,
+          (r.rx*pad+extraX)*2*scale, (r.ry*pad+extraY)*2*scale
+        );
+      }else{
+        clipPath.ellipse(
+          (r.cx+rdx*0.5)*scale, (r.cy+rdy*0.5)*scale,
+          (r.rx*pad+extraX)*scale, (r.ry*pad+extraY)*scale, 0, 0, Math.PI*2
+        );
+      }
+    }
+    targetCtx.clip(clipPath);
+
+    const drawTri = isLive ? drawTexturedTriangle : null;
+    for(let j=0;j<rows;j++){
+      for(let i=0;i<cols;i++){
+        // Skip cells with no influence from any region in the group at all
+        // four corners — pure background, no need to redraw it.
+        if(fallAt[j][i]<=0 && fallAt[j][i+1]<=0 && fallAt[j+1][i]<=0 && fallAt[j+1][i+1]<=0) continue;
+        const s00=srcPts[j][i], s10=srcPts[j][i+1], s01=srcPts[j+1][i], s11=srcPts[j+1][i+1];
+        const d00=dstPts[j][i], d10=dstPts[j][i+1], d01=dstPts[j+1][i], d11=dstPts[j+1][i+1];
+        if(isLive){
+          drawTexturedTriangle(off, s00[0],s00[1],s10[0],s10[1],s11[0],s11[1], d00[0],d00[1],d10[0],d10[1],d11[0],d11[1]);
+          drawTexturedTriangle(off, s00[0],s00[1],s11[0],s11[1],s01[0],s01[1], d00[0],d00[1],d11[0],d11[1],d01[0],d01[1]);
+        }else{
+          drawTexturedTriangleAt(targetCtx, off, s00[0],s00[1],s10[0],s10[1],s11[0],s11[1], d00[0],d00[1],d10[0],d10[1],d11[0],d11[1]);
+          drawTexturedTriangleAt(targetCtx, off, s00[0],s00[1],s11[0],s11[1],s01[0],s01[1], d00[0],d00[1],d11[0],d11[1],d01[0],d01[1]);
+        }
+      }
+    }
+    targetCtx.restore();
+    if(isLive) targetCtx.setTransform(dprScale,0,0,dprScale,0,0);
+  }
+
   // ---------- Main loop ----------
   function loop(now){
     stepPhysics(now);
@@ -1010,6 +1488,7 @@ details#panel summary::before{content:"⚙️ ";}#debugPanel summary::before{con
   }
   requestAnimationFrame(loop);
   requestAnimationFrame(drawFrame);
+  updateShapeButton();
   updateLockButton();
 
   function updateDebug(){
@@ -1087,9 +1566,7 @@ details#panel summary::before{content:"⚙️ ";}#debugPanel summary::before{con
       const rowSrc = [], rowDst = [];
       for(let i=0;i<=cols;i++){
         const sx = bx0 + i*cellW, sy = by0 + j*cellH;
-        const nx = (sx - r.cx) / r.rx, ny = (sy - r.cy) / r.ry;
-        const t = Math.sqrt(nx*nx + ny*ny);
-        const fall = smoothFalloff(Math.min(1, t));
+        const fall = getWarpFalloff(r, sx, sy);
         rowSrc.push([sx, sy]);
         rowDst.push([sx + rdx*fall, sy + rdy*fall]);
       }
@@ -1097,12 +1574,25 @@ details#panel summary::before{content:"⚙️ ";}#debugPanel summary::before{con
     }
 
     targetCtx.save();
-    targetCtx.beginPath();
-    targetCtx.ellipse(
-      r.cx + rdx*0.5, r.cy + rdy*0.5,
-      r.rx*pad + extraX, r.ry*pad + extraY, 0, 0, Math.PI*2
-    );
-    targetCtx.clip();
+    // Keep recording identical to the live renderer: the drop's clip follows
+    // the same half-displacement + expanded-envelope rule as the ellipse.
+    // A full rigid translation here would make the recorded drop look like a
+    // separate overlay instead of part of the image.
+    if(r.shape === 'freeform'){
+      // Same reasoning as the live renderer: clip to the mesh's own padded
+      // bounding box instead of a scaled teardrop path, so large jelly
+      // displacement can never chop into the still-warping interior.
+      targetCtx.beginPath();
+      targetCtx.rect(bx0, by0, bw, bh);
+      targetCtx.clip();
+    }else{
+      targetCtx.beginPath();
+      targetCtx.ellipse(
+        r.cx + rdx*0.5, r.cy + rdy*0.5,
+        r.rx*pad + extraX, r.ry*pad + extraY, 0, 0, Math.PI*2
+      );
+      targetCtx.clip();
+    }
 
     for(let j=0;j<rows;j++){
       for(let i=0;i<cols;i++){
@@ -1120,15 +1610,21 @@ details#panel summary::before{content:"⚙️ ";}#debugPanel summary::before{con
     targetCtx.setTransform(1,0,0,1,0,0);
     targetCtx.clearRect(0,0,imgW,imgH);
     targetCtx.drawImage(img, 0, 0, imgW, imgH, 0, 0, imgW, imgH);
-    for(const r of regions) renderRegionWarpAt(targetCtx, r);
+    for(const group of groupOverlappingRegions(regions)){
+      if(group.length === 1) renderRegionWarpAt(targetCtx, group[0]);
+      else renderRegionGroup(group, targetCtx, 1, 1, false);
+    }
     if(includeOutlines){
       for(const r of regions){
         targetCtx.save();
         targetCtx.strokeStyle = 'rgba(255,255,255,0.35)';
         targetCtx.lineWidth = Math.max(1, imgW/600);
-        targetCtx.beginPath();
-        targetCtx.ellipse((r.cx+(r.renderDx||0)), (r.cy+(r.renderDy||0)), r.rx, r.ry, 0, 0, Math.PI*2);
-        targetCtx.stroke();
+        const outlinePath = new Path2D();
+        traceRegionPath(
+          outlinePath, r, 1,
+          (r.renderDx||0), (r.renderDy||0)
+        );
+        targetCtx.stroke(outlinePath);
         targetCtx.restore();
       }
     }
